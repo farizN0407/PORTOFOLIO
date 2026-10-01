@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#0b1016" />
+    <title>Portfolio CMS — Fariz</title>
+    <link rel="stylesheet" href="admin.css" />
+    <script src="admin.js" defer></script>
+  </head>
+  <body>
+    <main class="auth-layout" id="auth-layout">
+      <div class="auth-art"><a href="/" class="mark">F<span>.</span></a><span class="auth-art-label">PRIVATE WORKSPACE / 01</span><p>Keep the signal.<br /><em>Share the work.</em></p><span class="auth-art-foot">FARIZ NARARYA ABHYASA<br />CYBER SECURITY</span></div>
+      <form class="login-card" id="login-form"><p class="eyebrow">PORTFOLIO CONTENT MANAGER</p><h1>Welcome<br />back.</h1><p class="login-copy">Sign in to manage the work shown on your portfolio.</p><label>Email address<input type="email" name="email" autocomplete="username" required /></label><label>Password<input type="password" name="password" autocomplete="current-password" required /></label><button class="button button-dark" type="submit">SIGN IN <span>↗</span></button><p class="form-message" id="login-message" role="status"></p><a href="/" class="return-link">← BACK TO PORTFOLIO</a></form>
+    </main>
+    <div class="dashboard hidden" id="dashboard">
+      <aside class="sidebar"><a class="sidebar-brand" href="/">F<span>.</span> <small>PORTFOLIO CMS</small></a><p class="eyebrow sidebar-label">CONTENT</p><nav id="section-nav"><button class="active" data-section="projects">Projects <span>01</span></button><button data-section="certifications">Certifications <span>02</span></button><button data-section="activities">Activities <span>03</span></button></nav><a class="view-site" href="/" target="_blank">VIEW WEBSITE ↗</a><div class="sidebar-footer"><span class="status-dot"></span> PRIVATE SESSION</div></aside>
+      <section class="admin-main"><header class="admin-header"><div><p class="eyebrow">CONTENT MANAGEMENT</p><h1 id="section-title">Projects</h1></div><div class="header-right"><span id="admin-email"></span><button class="logout-button" id="logout-button">SIGN OUT ↗</button></div></header><div class="toolbar"><p id="item-count">0 entries</p><button class="button button-dark" id="new-button">ADD NEW <span>＋</span></button></div><div class="entry-list" id="entry-list"></div><div class="empty-state hidden" id="empty-state"><span class="empty-icon">—</span><h2>Nothing here yet.</h2><p>Add an entry when it’s ready to share.</p></div>
+      </section>
+    </div>
+    <dialog id="entry-dialog"><form id="entry-form" method="dialog"><div class="dialog-head"><div><p class="eyebrow" id="dialog-kicker">NEW ENTRY</p><h2 id="dialog-title">Add project</h2></div><button class="close-button" type="button" id="close-dialog" aria-label="Close">×</button></div><div class="field-grid" id="field-grid"></div><div class="form-options"><label class="check-row"><input type="checkbox" name="is_published" /> <span>Published on portfolio</span></label><label class="order-field">Display order<input type="number" name="sort_order" value="0" /></label></div><p class="form-message" id="entry-message" role="status"></p><div class="dialog-actions"><button class="cancel-button" type="button" id="cancel-dialog">CANCEL</button><button class="button button-dark" type="submit">SAVE ENTRY <span>↗</span></button></div></form></dialog>
+  </body>
+</html>
