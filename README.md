@@ -26,7 +26,9 @@ When hosting behind HTTPS, set `COOKIE_SECURE=true`. Use a secret `APP_SECRET`, 
 
 ## Admin dashboard
 
-The dashboard supports create, edit, delete, publish/hide, and display ordering for projects, certifications, and activities. Entries appear publicly only when published. Login uses signed, HTTP-only, SameSite cookies, server-side sessions, CSRF tokens, login attempt throttling, input validation, and parameterized PostgreSQL statements. File uploads are not enabled.
+The dashboard supports create, edit, delete, publish/hide, and display ordering for projects, certifications, and activities. Project images and certification documents can be uploaded from the entry editor. Accepted formats are PNG, JPG, WEBP, and PDF, with a 5 MB per-file limit. The binary file and its metadata are stored in PostgreSQL `BYTEA`; the public media route serves an attachment only while its linked entry is published. Removing or replacing an attachment also removes the old database row when it is no longer in use.
+
+Only an authenticated admin session can upload, preview unpublished files, or modify and delete content. Login uses signed, HTTP-only, SameSite cookies, server-side sessions, CSRF tokens, login attempt throttling, input validation, and parameterized PostgreSQL statements. Public API routes are read-only. Keep database backups sized for uploaded files as well as table data.
 
 ## Content notes
 
@@ -40,5 +42,5 @@ The dashboard supports create, edit, delete, publish/hide, and display ordering 
 - `app.py` — local web server, PostgreSQL schema initialization, public API, protected admin API
 - `requirements.txt` — Psycopg 3 PostgreSQL driver
 - `index.html`, `styles.css`, `extra.css`, `script.js` — public portfolio
-- `admin.html`, `admin.css`, `admin.js` — content manager
+- `admin.html`, `admin.css`, `admin-extra.css`, `admin.js` — content manager
 - `.env.example` — configuration template; it contains no real credentials

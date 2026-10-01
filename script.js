@@ -85,7 +85,16 @@ async function loadPortfolioContent() {
       title.textContent = project.title;
       const summary = document.createElement("p");
       summary.textContent = project.summary || project.description || "";
-      card.append(top, title, summary);
+      card.append(top);
+      if (project.thumbnail_url) {
+        const image = document.createElement("img");
+        image.className = "project-thumbnail";
+        image.src = project.thumbnail_url;
+        image.alt = `${project.title} preview`;
+        image.loading = "lazy";
+        card.append(image);
+      }
+      card.append(title, summary);
       if (project.tools) {
         const tools = document.createElement("p");
         tools.className = "project-tools";
@@ -115,6 +124,9 @@ async function loadPortfolioContent() {
       info.append(name, issuer);
       row.append(info);
       addExternalLink(row, "VIEW CREDENTIAL", certification.credential_url);
+      if (certification.certificate_file_url) {
+        addExternalLink(row, "OPEN FILE", certification.certificate_file_url);
+      }
       certificationList.append(row);
     });
 

@@ -21,7 +21,10 @@ const schema = {
       ["github_url", "GitHub URL", "url", false, false],
       ["external_url", "External URL", "url", false, false],
       ["featured", "Featured project", "checkbox", false, false],
+      ["thumbnail_id", "Project image", "file", true, false],
     ],
+    fileField: "thumbnail_id",
+    fileAccept: "image/png,image/jpeg,image/webp",
     detail: (item) => item.summary,
     category: (item) => item.category || "PROJECT",
   },
@@ -34,7 +37,10 @@ const schema = {
       ["credential_url", "Credential URL", "url", false, false],
       ["credential_id", "Credential ID", "text", false, false],
       ["description", "Description", "textarea", true, false],
+      ["certificate_file_id", "Certificate file", "file", true, false],
     ],
+    fileField: "certificate_file_id",
+    fileAccept: "application/pdf,image/png,image/jpeg,image/webp",
     detail: (item) => [item.issuer, item.date].filter(Boolean).join(" · "),
     category: () => "CERTIFICATION",
   },
@@ -48,6 +54,7 @@ const schema = {
       ["description", "Description", "textarea", true, false],
       ["url", "URL", "url", false, false],
     ],
+    fileField: null,
     detail: (item) => [item.role, item.start_date, item.end_date].filter(Boolean).join(" · "),
     category: () => "ACTIVITY",
   },
@@ -118,6 +125,16 @@ function makeEntryCard(item, currentSchema) {
   description.className = "entry-description";
   description.textContent = currentSchema.detail(item) || "No additional details";
   main.append(category, title, description);
+  if (item.attachment_name && (item.thumbnail_id || item.certificate_file_id)) {
+    const attachment = document.createElement("a");
+    const fileId = item.thumbnail_id || item.certificate_file_id;
+    attachment.className = "entry-attachment";
+    attachment.href = `/api/admin/files/${fileId}`;
+    attachment.target = "_blank";
+    attachment.rel = "noreferrer";
+    attachment.textContent = `FILE · ${item.attachment_name}`;
+    main.append(attachment);
+  }
   const status = document.createElement("div");
   status.className = `entry-status${item.is_published ? "" : " draft"}`;
   const dot = document.createElement("i");
@@ -142,10 +159,46 @@ function makeEntryCard(item, currentSchema) {
 function buildFields() {
   fieldGrid.replaceChildren();
   schema[currentSection].fields.forEach(([name, label, type, full]) => {
-    const wrapper = document.createElement("label");
+    const wrapper = document.createElement(type === "file" ? "div" : "label");
     wrapper.className = `field${full ? " full" : ""}`;
     wrapper.append(document.createTextNode(label));
-    if (type === "checkbox") {
+    if (type === "file") {
+      const hidden = document.createElement("input");
+      hidden.type = "hidden";
+      hidden.name = name;
+      const input = document.createElement("input");
+      input.type = "file";
+      input.name = "attachment_upload";
+      input.accept = schema[currentSection].fileAccept;
+      input.className = "file-input";
+      const status = document.createElement("p");
+      status.className = "attachment-status";
+      status.id = "attachment-status";
+      status.textContent = "No file attached. Choose a PNG, JPG, WEBP, or PDF up to 5 MB.";
+      input.addEventListener("change", () => {
+        const selected = input.files?.[0];
+        if (selected) {
+          status.textContent = `Ready to upload: ${selected.name}`;
+          remove.checked = false;
+        }
+      });
+      const removeLabel = document.createElement("label");
+      removeLabel.className = "remove-file-row";
+      const remove = document.createElement("input");
+      remove.type = "checkbox";
+      remove.name = "remove_attachment";
+      remove.addEventListener("change", () => {
+        if (remove.checked) {
+          input.value = "";
+          hidden.value = "";
+          status.textContent = "The attached file will be removed when you save.";
+        } else if (!input.files?.length) {
+          status.textContent = "No new file selected.";
+        }
+      });
+      removeLabel.append(remove, document.createTextNode("Remove attached file"));
+      wrapper.append(hidden, input, status, removeLabel);
+    } else if (type === "checkbox") {
       const input = document.createElement("input");
       input.type = type;
       input.name = name;
@@ -176,6 +229,16 @@ function openDialog(item = null) {
       if (input.type === "checkbox") input.checked = Boolean(value);
       else input.value = value ?? "";
     });
+    const fileField = schema[currentSection].fileField;
+    if (fileField && item[fileField]) {
+      const status = document.querySelector("#attachment-status");
+      const link = document.createElement("a");
+      link.href = `/api/admin/files/${item[fileField]}`;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = item.attachment_name || "View attached file";
+      status.replaceChildren(document.createTextNode("Current file: "), link);
+    }
   }
   dialog.showModal();
 }
@@ -220,20 +283,53 @@ entryForm.addEventListener("submit", async (event) => {
   entryMessage.textContent = "";
   const data = new FormData(entryForm);
   const payload = {};
-  schema[currentSection].fields.forEach(([name, , ,]) => {
+  schema[currentSection].fields.forEach(([name, , type]) => {
+    if (type === "file") return;
     const input = entryForm.elements.namedItem(name);
     payload[name] = input.type === "checkbox" ? input.checked : data.get(name);
   });
   payload.is_published = entryForm.elements.namedItem("is_published").checked;
   payload.sort_order = Number(data.get("sort_order") || 0);
+  let uploadedFileId = null;
   try {
+    const fileField = schema[currentSection].fileField;
+    if (fileField) {
+      const selectedFile = entryForm.elements.namedItem("attachment_upload").files?.[0];
+      const removeAttachment = entryForm.elements.namedItem("remove_attachment").checked;
+      const existingFileId = entryForm.elements.namedItem(fileField).value;
+      if (selectedFile) {
+        if (selectedFile.size > 5 * 1024 * 1024) throw new Error("Files must be 5 MB or smaller");
+        const response = await fetch("/api/admin/files", {
+          method: "POST",
+          body: selectedFile,
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": selectedFile.type,
+            "X-File-Name": encodeURIComponent(selectedFile.name),
+            "X-CSRF-Token": csrfToken,
+          },
+        });
+        const uploaded = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(uploaded.error || "File upload failed");
+        uploadedFileId = uploaded.id;
+        payload[fileField] = uploaded.id;
+      } else if (removeAttachment) {
+        payload[fileField] = null;
+      } else {
+        payload[fileField] = existingFileId ? Number(existingFileId) : null;
+      }
+    }
     await api(`/api/admin/${currentSection}${editingId ? `/${editingId}` : ""}`, {
       method: editingId ? "PUT" : "POST",
       body: JSON.stringify(payload),
     });
+    uploadedFileId = null;
     dialog.close();
     await loadSection(currentSection);
   } catch (error) {
+    if (uploadedFileId) {
+      await api(`/api/admin/files/${uploadedFileId}`, { method: "DELETE" }).catch(() => {});
+    }
     entryMessage.textContent = error.message;
   }
 });
