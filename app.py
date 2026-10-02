@@ -867,7 +867,7 @@ class PortfolioHandler(BaseHTTPRequestHandler):
         path = unquote(requested_path)
         if path in ("/", "/index.html"):
             file = ROOT / "index.html"
-        elif path == "/admin":
+        elif path in ("/admin", "/admin/"):
             file = ROOT / "admin.html"
         elif path == "/about":
             file = ROOT / "about.html"
@@ -890,8 +890,13 @@ class PortfolioHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
-        if path == "/admin":
+        if path in ("/admin", "/admin/"):
             self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
+        if path in (
+            "/admin", "/admin/", "/admin.css", "/admin-extra.css",
+            "/writeups-admin.css", "/profile-admin.css", "/admin.js",
+        ):
+            self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)
