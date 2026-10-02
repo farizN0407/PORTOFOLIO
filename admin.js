@@ -12,6 +12,8 @@ const dialog = document.querySelector("#entry-dialog");
 const entryForm = document.querySelector("#entry-form");
 const fieldGrid = document.querySelector("#field-grid");
 const entryMessage = document.querySelector("#entry-message");
+const profileForm = document.querySelector("#profile-form");
+const profileMessage = document.querySelector("#profile-message");
 
 const schema = {
   projects: {
@@ -158,11 +160,29 @@ setupForm.addEventListener("submit", async (event) => {
 
 async function loadSection(name) {
   currentSection = name;
+  const isProfile = name === "profile";
   const currentSchema = schema[name];
-  document.querySelector("#section-title").textContent = currentSchema.title;
+  document.querySelector("#section-title").textContent = isProfile ? "Profile / Contact" : currentSchema.title;
   document.querySelectorAll("#section-nav button").forEach((button) => {
     button.classList.toggle("active", button.dataset.section === name);
   });
+  document.querySelector("#content-toolbar").classList.toggle("hidden", isProfile);
+  entryList.classList.toggle("hidden", isProfile);
+  emptyState.classList.add("hidden");
+  profileForm.classList.toggle("hidden", !isProfile);
+  if (isProfile) {
+    profileMessage.textContent = "Loading saved details…";
+    try {
+      const profile = await api("/api/admin/profile");
+      for (const field of ["email", "whatsapp", "linkedin_url", "github_url", "phone"]) {
+        profileForm.elements[field].value = profile[field] || "";
+      }
+      profileMessage.textContent = "";
+    } catch (error) {
+      profileMessage.textContent = error.message;
+    }
+    return;
+  }
   entryList.replaceChildren();
   try {
     items = await api(`/api/admin/${name}`);
@@ -489,6 +509,20 @@ document.querySelectorAll("#section-nav button").forEach((button) => {
   button.addEventListener("click", () => loadSection(button.dataset.section));
 });
 document.querySelector("#new-button").addEventListener("click", () => openDialog());
+profileForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  profileMessage.textContent = "Saving profile details…";
+  const values = Object.fromEntries(new FormData(profileForm).entries());
+  try {
+    const saved = await api("/api/admin/profile", { method: "PUT", body: JSON.stringify(values) });
+    for (const field of ["email", "whatsapp", "linkedin_url", "github_url", "phone"]) {
+      profileForm.elements[field].value = saved[field] || "";
+    }
+    profileMessage.textContent = "Profile details saved.";
+  } catch (error) {
+    profileMessage.textContent = error.message;
+  }
+});
 document.querySelector("#close-dialog").addEventListener("click", () => dialog.close());
 document.querySelector("#cancel-dialog").addEventListener("click", () => dialog.close());
 dialog.addEventListener("close", () => {
@@ -540,21 +574,11 @@ entryForm.addEventListener("submit", async (event) => {
         payload[fileField] = existingFileId ? Number(existingFileId) : null;
       }
     }
-    const saved = await api(`/api/admin/${currentSection}${editingId ? `/${editingId}` : ""}`, {
+    await api(`/api/admin/${currentSection}${editingId ? `/${editingId}` : ""}`, {
       method: editingId ? "PUT" : "POST",
       body: JSON.stringify(payload),
     });
     uploadedFileId = null;
-    if (currentSection === "projects" && !editingId) {
-      editingId = saved.id;
-      entryForm.elements.namedItem("slug").value = saved.slug;
-      document.querySelector("#dialog-kicker").textContent = "EDIT ENTRY";
-      document.querySelector("#dialog-title").textContent = "Edit project";
-      entryMessage.textContent = "Project saved. You can now add write-ups above.";
-      await loadProjectAttachments(editingId);
-      await loadSection(currentSection);
-      return;
-    }
     dialog.close();
     await loadSection(currentSection);
   } catch (error) {

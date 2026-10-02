@@ -97,6 +97,16 @@ def init_db() -> None:
             expires_at TIMESTAMPTZ NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS profile_settings (
+            id SMALLINT PRIMARY KEY CHECK (id = 1),
+            email TEXT NOT NULL DEFAULT '',
+            whatsapp TEXT NOT NULL DEFAULT '',
+            linkedin_url TEXT NOT NULL DEFAULT '',
+            github_url TEXT NOT NULL DEFAULT '',
+            phone TEXT NOT NULL DEFAULT '',
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+        db.execute("INSERT INTO profile_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
         db.execute("""CREATE TABLE IF NOT EXISTS uploaded_files (
             id BIGSERIAL PRIMARY KEY,
             original_name TEXT NOT NULL,
@@ -175,6 +185,13 @@ def validate_url(value: str) -> bool:
     return not value or (len(value) <= 2048 and value.startswith(("https://", "http://")))
 
 
+def validate_profile_url(value: str) -> bool:
+    if not value:
+        return True
+    parsed = urlparse(value)
+    return len(value) <= 2048 and parsed.scheme in ("http", "https") and bool(parsed.hostname) and not re.search(r"\s", value)
+
+
 def slugify(value: str) -> str:
     normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").lower()
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", normalized)).strip("-")[:160].strip("-")
@@ -217,19 +234,22 @@ class PortfolioHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_uploaded_file(self, file_record: dict[str, object], *, public: bool, inline: bool = False) -> None:
+    def send_uploaded_file(self, file_record: dict[str, object], *, inline: bool = False) -> None:
         media_type = str(file_record["media_type"])
-        filename = str(file_record["original_name"])
+        filename = str(file_record["original_name"]).replace("\\", "/").rsplit("/", 1)[-1]
+        filename = re.sub(r"[\x00-\x1f\x7f]", "", filename).strip()[:180] or "download"
+        safe_filename = re.sub(r"[^A-Za-z0-9._ -]", "_", filename).strip(" .") or "download"
         disposition = "inline" if inline or media_type.startswith("image/") else "attachment"
         body = bytes(file_record["data"])
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", media_type)
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Content-Disposition", f"{disposition}; filename*=UTF-8''{quote(filename, safe='')}")
+        self.send_header("Content-Disposition", f'{disposition}; filename="{safe_filename}"; filename*=UTF-8\'\'{quote(filename, safe="")}' )
         self.send_header("X-Content-Type-Options", "nosniff")
         self.send_header("X-Frame-Options", "DENY")
         self.send_header("Cross-Origin-Resource-Policy", "same-origin")
-        self.send_header("Cache-Control", "public, max-age=86400, immutable" if public else "no-store")
+        # Visibility depends on the parent record's current publish state, so intermediaries must not retain the bytes.
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
 
@@ -313,6 +333,11 @@ class PortfolioHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/public/profile":
+            with connect_db() as db:
+                profile = db.execute("SELECT email, whatsapp, linkedin_url, github_url, phone FROM profile_settings WHERE id = 1").fetchone()
+            self.send_json(HTTPStatus.OK, dict(profile) if profile else {"email": "", "whatsapp": "", "linkedin_url": "", "github_url": "", "phone": ""})
+            return
         if parsed.path == "/api/admin/status":
             setup_required = admin_setup_available()
             if setup_required:
@@ -347,7 +372,7 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                     WHERE p.slug = %s AND p.is_published IS TRUE""", (detail_match.group(1),)).fetchone()
                 if project:
                     attachments = db.execute("""SELECT a.id, a.title, a.display_order, a.created_at,
-                            f.media_type, f.byte_size, '/project-attachments/' || a.id::text AS url
+                            f.original_name AS filename, f.media_type, f.byte_size, '/project-attachments/' || a.id::text AS url
                         FROM project_attachments a JOIN uploaded_files f ON f.id = a.file_id
                         WHERE a.project_id = %s AND EXISTS (SELECT 1 FROM projects p WHERE p.id = a.project_id AND p.is_published IS TRUE)
                         ORDER BY a.display_order, a.id""", (project["id"],)).fetchall()
@@ -369,7 +394,7 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             if file_record is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
             else:
-                self.send_uploaded_file(file_record, public=True, inline=True)
+                self.send_uploaded_file(file_record, inline=True)
             return
         media_match = re.fullmatch(r"/media/(\d+)", parsed.path)
         if media_match:
@@ -383,7 +408,7 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             if file_record is None:
                 self.send_error(HTTPStatus.NOT_FOUND)
             else:
-                self.send_uploaded_file(file_record, public=True)
+                self.send_uploaded_file(file_record)
             return
         if parsed.path == "/api/admin/session":
             current = self.require_session()
@@ -401,7 +426,12 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                 if file_record is None:
                     self.send_error(HTTPStatus.NOT_FOUND)
                 else:
-                    self.send_uploaded_file(file_record, public=False, inline=True)
+                    self.send_uploaded_file(file_record, inline=True)
+                return
+            if parsed.path == "/api/admin/profile":
+                with connect_db() as db:
+                    profile = db.execute("SELECT email, whatsapp, linkedin_url, github_url, phone FROM profile_settings WHERE id = 1").fetchone()
+                self.send_json(HTTPStatus.OK, dict(profile) if profile else {})
                 return
             attachment_match = re.fullmatch(r"/api/admin/projects/(\d+)/attachments", parsed.path)
             if attachment_match:
@@ -590,6 +620,40 @@ class PortfolioHandler(BaseHTTPRequestHandler):
 
     def do_PUT(self) -> None:
         if not self.require_session():
+            return
+        if urlparse(self.path).path == "/api/admin/profile":
+            try:
+                incoming = self.body_json()
+                if not isinstance(incoming, dict):
+                    raise ValueError("Invalid profile details")
+                email = str(incoming.get("email", "")).strip().lower()
+                whatsapp_raw = str(incoming.get("whatsapp", "")).strip()
+                linkedin_url = str(incoming.get("linkedin_url", "")).strip()
+                github_url = str(incoming.get("github_url", "")).strip()
+                phone = str(incoming.get("phone", "")).strip()
+                if email and (len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email)):
+                    raise ValueError("Enter a valid email address")
+                if len(whatsapp_raw) > 40 or re.search(r"[^0-9+() .-]", whatsapp_raw):
+                    raise ValueError("Enter a valid WhatsApp number using digits and optional +, spaces, parentheses, or hyphens")
+                whatsapp = re.sub(r"\D", "", whatsapp_raw)
+                if whatsapp and (not re.fullmatch(r"[1-9][0-9]{7,14}", whatsapp)):
+                    raise ValueError("WhatsApp number must include the country code and contain 8 to 15 digits")
+                if not validate_profile_url(linkedin_url):
+                    raise ValueError("LinkedIn URL must start with http:// or https://")
+                if not validate_profile_url(github_url):
+                    raise ValueError("GitHub URL must start with http:// or https://")
+                phone_digits = re.sub(r"\D", "", phone)
+                if len(phone) > 40 or (phone and (not re.fullmatch(r"\+?[0-9(). -]+", phone) or not 5 <= len(phone_digits) <= 15)):
+                    raise ValueError("Enter a valid phone number")
+            except (ValueError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as error:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error) or "Invalid profile details"})
+                return
+            with connect_db() as db:
+                row = db.execute("""UPDATE profile_settings SET email = %s, whatsapp = %s, linkedin_url = %s,
+                    github_url = %s, phone = %s, updated_at = CURRENT_TIMESTAMP WHERE id = 1
+                    RETURNING email, whatsapp, linkedin_url, github_url, phone""",
+                    (email, whatsapp, linkedin_url, github_url, phone)).fetchone()
+            self.send_json(HTTPStatus.OK, dict(row))
             return
         attachment_match = re.fullmatch(r"/api/admin/projects/(\d+)/attachments/(\d+)", urlparse(self.path).path)
         if attachment_match:
@@ -809,7 +873,7 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             file = ROOT / "about.html"
         elif re.fullmatch(r"/projects/[a-z0-9]+(?:-[a-z0-9]+)*", path):
             file = ROOT / "project.html"
-        elif path in ("/styles.css", "/extra.css", "/script.js", "/admin.css", "/admin-extra.css", "/writeups-admin.css", "/admin.js", "/project.css", "/project.js", "/about.css", "/about.js"):
+        elif path in ("/styles.css", "/extra.css", "/contact-profile.css", "/script.js", "/admin.css", "/admin-extra.css", "/writeups-admin.css", "/profile-admin.css", "/admin.js", "/project.css", "/project-download.css", "/project.js", "/about.css", "/about.js"):
             file = ROOT / path.lstrip("/")
         elif path == "/assets/portfolio-hero.png":
             file = ASSET_ROOT / "portfolio-hero.png"

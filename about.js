@@ -1,12 +1,17 @@
-// Add a LinkedIn profile URL here when it is ready; leave empty to show the placeholder.
-const LINKEDIN_URL = "";
-const placeholder = document.querySelector("#linkedin-placeholder");
-
-if (LINKEDIN_URL && placeholder) {
-  const link = document.createElement("a");
-  link.href = LINKEDIN_URL;
-  link.target = "_blank";
-  link.rel = "noreferrer";
-  link.textContent = "LINKEDIN ↗";
-  placeholder.replaceWith(link);
+async function loadAboutProfileLinks() {
+  try {
+    const response = await fetch("/api/public/profile");
+    if (!response.ok) throw new Error(`Profile could not be loaded (HTTP ${response.status})`);
+    const profile = await response.json();
+    for (const [selector, field] of [["#about-github-link", "github_url"], ["#about-linkedin-link", "linkedin_url"]]) {
+      const link = document.querySelector(selector);
+      if (!link || !profile[field]) continue;
+      link.href = profile[field];
+      link.classList.remove("hidden");
+    }
+  } catch (error) {
+    console.error("About page contact links could not be loaded.", error);
+  }
 }
+
+loadAboutProfileLinks();

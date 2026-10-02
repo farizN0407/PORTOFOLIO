@@ -11,6 +11,7 @@
     <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Manrope:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="styles.css" />
     <link rel="stylesheet" href="extra.css" />
+    <link rel="stylesheet" href="contact-profile.css" />
     <script src="script.js" defer></script>
   </head>
   <body>
@@ -51,7 +52,7 @@
         <div class="section-label"><span>01 / PROFILE</span><span class="label-line"></span><span>ABOUT ME</span></div>
         <div class="about-grid">
           <div class="about-title-wrap"><p class="eyebrow">A LITTLE CONTEXT</p><h2>Learning to<br />see the <em>whole</em><br />system.</h2><span class="outline-stamp">F<br />N.</span></div>
-          <div class="about-copy"><p class="lead">I’m Fariz Nararya Abhyasa, a Cyber Security student at Bina Nusantara University with a growing interest in Blue Team and defensive security.</p><p>I’m building my knowledge step by step: paying attention to the details, asking better questions, and learning how systems can be made more resilient.</p><a class="text-link dark-link" href="https://github.com/farizN0407" target="_blank" rel="noreferrer">FIND ME ON GITHUB <span aria-hidden="true">↗</span></a> <a class="text-link dark-link" href="/about">GET TO KNOW ME MORE <span aria-hidden="true">↗</span></a>
+          <div class="about-copy"><p class="lead">I’m Fariz Nararya Abhyasa, a Cyber Security student at Bina Nusantara University with a growing interest in Blue Team and defensive security.</p><p>I’m building my knowledge step by step: paying attention to the details, asking better questions, and learning how systems can be made more resilient.</p><a class="text-link dark-link hidden" id="about-github-cta" target="_blank" rel="noreferrer">FIND ME ON GITHUB <span aria-hidden="true">↗</span></a> <a class="text-link dark-link" href="/about">GET TO KNOW ME MORE ↗</a>
             <div class="profile-facts"><div><span>EDUCATION</span><strong>Bina Nusantara University</strong><small>Cyber Security · Semester 5</small></div><div><span>PERIOD</span><strong>2024 — Present</strong><small>Undergraduate studies</small></div><div><span>FOCUS</span><strong>Blue Team</strong><small>Defensive security</small></div></div>
           </div>
         </div>
@@ -79,7 +80,7 @@
       <section class="contact-section" id="contact">
         <div class="contact-topline"><span>05 / GET IN TOUCH</span><span class="status-dot"></span><span>OPEN TO CONVERSATION</span></div>
         <p class="eyebrow">HAVE SOMETHING IN MIND?</p><h2>Let’s start<br />with <em>hello.</em></h2>
-        <div class="contact-bottom"><p>Contact details are being put together.<br />In the meantime, find me on GitHub.</p><a class="contact-button" href="https://github.com/farizN0407" target="_blank" rel="noreferrer">VISIT GITHUB <span aria-hidden="true">↗</span></a></div>
+        <div class="contact-bottom"><div class="contact-links" id="contact-links" aria-live="polite"></div><div class="contact-actions"><a class="contact-profile-link" href="/about">GET TO KNOW ME MORE ↗</a><a class="contact-button hidden" id="contact-github-cta" target="_blank" rel="noreferrer">VISIT GITHUB <span aria-hidden="true">↗</span></a></div></div>
         <div class="contact-watermark">FN.</div>
       </section>
     </main>

@@ -201,11 +201,61 @@ async function loadPortfolioSection(kind, render) {
   }
 }
 
+function renderPublicProfile(profile) {
+  const contactLinks = document.querySelector("#contact-links");
+  const githubCta = document.querySelector("#contact-github-cta");
+  const aboutGithub = document.querySelector("#about-github-cta");
+  if (!contactLinks) return;
+  contactLinks.replaceChildren();
+  const addContact = (label, value, href, external = false) => {
+    if (!value || !href) return;
+    const link = document.createElement("a");
+    link.className = "contact-item";
+    link.href = href;
+    if (external) { link.target = "_blank"; link.rel = "noreferrer"; }
+    const kind = document.createElement("span");
+    kind.className = "contact-item-label";
+    kind.textContent = label;
+    const text = document.createElement("strong");
+    text.textContent = value;
+    const arrow = document.createElement("span");
+    arrow.className = "contact-item-arrow";
+    arrow.textContent = "↗";
+    link.append(kind, text, arrow);
+    contactLinks.append(link);
+  };
+  addContact("EMAIL", profile.email, `mailto:${profile.email}`);
+  const whatsapp = String(profile.whatsapp || "").replace(/\D/g, "");
+  addContact("WHATSAPP", profile.whatsapp, whatsapp ? `https://wa.me/${whatsapp}` : "", true);
+  addContact("LINKEDIN", profile.linkedin_url, profile.linkedin_url, true);
+  addContact("GITHUB", profile.github_url, profile.github_url, true);
+  addContact("PHONE", profile.phone, profile.phone ? `tel:${profile.phone.replace(/[^+0-9]/g, "")}` : "");
+  if (githubCta) {
+    githubCta.classList.toggle("hidden", !profile.github_url);
+    if (profile.github_url) githubCta.href = profile.github_url;
+  }
+  if (aboutGithub) {
+    aboutGithub.classList.toggle("hidden", !profile.github_url);
+    if (profile.github_url) aboutGithub.href = profile.github_url;
+  }
+}
+
+async function loadPublicProfile() {
+  try {
+    const response = await fetch("/api/public/profile");
+    if (!response.ok) throw new Error(`Profile could not be loaded (HTTP ${response.status})`);
+    renderPublicProfile(await response.json());
+  } catch (error) {
+    console.error("Portfolio profile could not be loaded.", error);
+  }
+}
+
 async function loadPortfolioContent() {
   await Promise.all([
     loadPortfolioSection("projects", renderProjects),
     loadPortfolioSection("certifications", renderCertifications),
     loadPortfolioSection("activities", renderActivities),
+    loadPublicProfile(),
   ]);
 }
 

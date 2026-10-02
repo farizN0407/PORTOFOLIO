@@ -35,19 +35,38 @@ function renderProject(project) {
   const list = document.querySelector("#writeup-public-list");
   document.querySelector("#writeups-empty").classList.toggle("hidden", attachments.length > 0);
   attachments.forEach((attachment, index) => {
-    const row = document.createElement("a");
+    const row = document.createElement("article");
     row.className = "writeup-public-row";
-    row.href = attachment.url;
-    row.target = "_blank";
-    row.rel = "noreferrer";
     const number = document.createElement("span");
     number.textContent = String(index + 1).padStart(2, "0");
+    const details = document.createElement("div");
     const title = document.createElement("strong");
     title.textContent = attachment.title;
-    const open = document.createElement("span");
-    open.className = "writeup-open";
-    open.textContent = "OPEN ↗";
-    row.append(number, title, open);
+    details.append(title);
+    if (attachment.filename && attachment.filename !== attachment.title) {
+      const filename = document.createElement("small");
+      filename.className = "writeup-filename";
+      filename.textContent = attachment.filename;
+      details.append(filename);
+    }
+    const actions = document.createElement("div");
+    actions.className = "writeup-actions";
+    const view = document.createElement("a");
+    view.className = "writeup-open";
+    view.href = attachment.url;
+    view.target = "_blank";
+    view.rel = "noreferrer";
+    view.textContent = attachment.media_type === "application/pdf" ? "VIEW WRITE-UP ↗" : "VIEW ATTACHMENT ↗";
+    actions.append(view);
+    if (attachment.media_type === "application/pdf") {
+      const download = document.createElement("a");
+      download.className = "writeup-download";
+      download.href = attachment.url;
+      download.download = attachment.filename || `${attachment.title || "write-up"}.pdf`;
+      download.textContent = "DOWNLOAD PDF ↓";
+      actions.append(download);
+    }
+    row.append(number, details, actions);
     list.append(row);
   });
   const links = document.querySelector("#case-links");
