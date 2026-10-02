@@ -107,6 +107,16 @@ function renderProjects(projects) {
     }
     const links = document.createElement("div");
     links.className = "project-links";
+    if (project.slug) {
+      const caseStudy = document.createElement("a");
+      caseStudy.className = "text-link dark-link";
+      caseStudy.href = `/projects/${encodeURIComponent(project.slug)}`;
+      caseStudy.append(document.createTextNode("VIEW PROJECT"));
+      const arrow = document.createElement("span");
+      arrow.textContent = "↗";
+      caseStudy.append(arrow);
+      links.append(caseStudy);
+    }
     addExternalLink(links, "GITHUB", project.github_url);
     addExternalLink(links, "LEARN MORE", project.external_url);
     if (links.childNodes.length) card.append(links);

@@ -18,6 +18,7 @@ const schema = {
     title: "Projects",
     fields: [
       ["title", "Project title", "text", true, true],
+      ["slug", "Public page slug (auto from title when blank)", "text", true, false],
       ["category", "Category", "text", false, false],
       ["summary", "Short description", "textarea", true, true],
       ["description", "Detailed description", "textarea", true, false],
@@ -160,6 +161,105 @@ async function loadSection(name) {
   }
 }
 
+async function loadProjectAttachments(projectId) {
+  const panel = document.querySelector("#writeup-panel");
+  if (currentSection !== "projects" || !projectId) {
+    panel.classList.add("hidden");
+    return;
+  }
+  panel.classList.remove("hidden");
+  document.querySelector("#writeup-message").textContent = "";
+  const list = document.querySelector("#writeup-list");
+  list.replaceChildren();
+  try {
+    const attachments = await api(`/api/admin/projects/${projectId}/attachments`);
+    document.querySelector("#writeup-hint").textContent = attachments.length ? `${attachments.length} attached file${attachments.length === 1 ? "" : "s"}` : "No write-ups attached yet.";
+    attachments.forEach((attachment) => list.append(renderProjectAttachment(projectId, attachment)));
+  } catch (error) {
+    document.querySelector("#writeup-message").textContent = error.message;
+  }
+}
+
+function renderProjectAttachment(projectId, attachment) {
+  const row = document.createElement("div");
+  row.className = "writeup-row";
+  const fields = document.createElement("div");
+  fields.className = "writeup-row-fields";
+  const title = document.createElement("input");
+  title.type = "text";
+  title.maxLength = 240;
+  title.value = attachment.title;
+  title.setAttribute("aria-label", "Attachment title");
+  const order = document.createElement("input");
+  order.type = "number";
+  order.value = attachment.display_order;
+  order.setAttribute("aria-label", "Display order");
+  fields.append(title, order);
+  const actions = document.createElement("div");
+  actions.className = "writeup-row-actions";
+  const open = document.createElement("a");
+  open.href = `/api/admin/files/${attachment.file_id}`;
+  open.target = "_blank";
+  open.rel = "noreferrer";
+  open.textContent = "OPEN";
+  const save = document.createElement("button");
+  save.type = "button";
+  save.textContent = "SAVE";
+  save.addEventListener("click", async () => {
+    try {
+      await api(`/api/admin/projects/${projectId}/attachments/${attachment.id}`, {
+        method: "PUT", body: JSON.stringify({ title: title.value, display_order: Number(order.value || 0) }),
+      });
+      await loadProjectAttachments(projectId);
+    } catch (error) { document.querySelector("#writeup-message").textContent = error.message; }
+  });
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.className = "delete";
+  remove.textContent = "DELETE";
+  remove.addEventListener("click", async () => {
+    if (!window.confirm(`Delete “${attachment.title}”?`)) return;
+    try {
+      await api(`/api/admin/projects/${projectId}/attachments/${attachment.id}`, { method: "DELETE" });
+      await loadProjectAttachments(projectId);
+    } catch (error) { document.querySelector("#writeup-message").textContent = error.message; }
+  });
+  actions.append(open, save, remove);
+  row.append(fields, actions);
+  const filename = document.createElement("small");
+  filename.textContent = attachment.original_name;
+  row.append(filename);
+  return row;
+}
+
+document.querySelector("#writeup-files").addEventListener("change", async (event) => {
+  const files = Array.from(event.target.files || []);
+  event.target.value = "";
+  if (!editingId || currentSection !== "projects" || !files.length) return;
+  const message = document.querySelector("#writeup-message");
+  message.textContent = "Uploading attachments…";
+  try {
+    const current = await api(`/api/admin/projects/${editingId}/attachments`);
+    for (const [index, file] of files.entries()) {
+      if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name} is larger than 5 MB`);
+      const response = await fetch(`/api/admin/projects/${editingId}/attachments`, {
+        method: "POST", body: file, credentials: "same-origin",
+        headers: {
+          "Content-Type": file.type,
+          "X-File-Name": encodeURIComponent(file.name),
+          "X-Attachment-Title": encodeURIComponent(file.name.replace(/\.[^.]+$/, "")),
+          "X-Display-Order": String(current.length + index),
+          "X-CSRF-Token": csrfToken,
+        },
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || `${file.name} upload failed`);
+    }
+    message.textContent = "Attachments uploaded.";
+    await loadProjectAttachments(editingId);
+  } catch (error) { message.textContent = error.message; }
+});
+
 function makeEntryCard(item, currentSchema) {
   const card = document.createElement("article");
   card.className = "entry-card";
@@ -291,6 +391,8 @@ function openDialog(item = null) {
     }
   }
   dialog.showModal();
+  if (currentSection === "projects") loadProjectAttachments(editingId);
+  else document.querySelector("#writeup-panel").classList.add("hidden");
 }
 
 async function deleteItem(id) {
@@ -369,11 +471,21 @@ entryForm.addEventListener("submit", async (event) => {
         payload[fileField] = existingFileId ? Number(existingFileId) : null;
       }
     }
-    await api(`/api/admin/${currentSection}${editingId ? `/${editingId}` : ""}`, {
+    const saved = await api(`/api/admin/${currentSection}${editingId ? `/${editingId}` : ""}`, {
       method: editingId ? "PUT" : "POST",
       body: JSON.stringify(payload),
     });
     uploadedFileId = null;
+    if (currentSection === "projects" && !editingId) {
+      editingId = saved.id;
+      entryForm.elements.namedItem("slug").value = saved.slug;
+      document.querySelector("#dialog-kicker").textContent = "EDIT ENTRY";
+      document.querySelector("#dialog-title").textContent = "Edit project";
+      entryMessage.textContent = "Project saved. You can now add write-ups above.";
+      await loadProjectAttachments(editingId);
+      await loadSection(currentSection);
+      return;
+    }
     dialog.close();
     await loadSection(currentSection);
   } catch (error) {

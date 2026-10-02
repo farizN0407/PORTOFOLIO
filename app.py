@@ -9,6 +9,7 @@ import os
 import re
 import secrets
 import time
+import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -124,6 +125,24 @@ def init_db() -> None:
             for name, kind in fields.items():
                 if kind == "file":
                     db.execute(f'ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS "{name}" BIGINT REFERENCES uploaded_files(id) ON DELETE SET NULL')
+        db.execute("ALTER TABLE projects ADD COLUMN IF NOT EXISTS slug TEXT")
+        for project in db.execute("SELECT id, title FROM projects WHERE slug IS NULL OR slug = ''").fetchall():
+            base = slugify(project["title"]) or f"project-{project['id']}"
+            candidate = base
+            suffix = 2
+            while db.execute("SELECT 1 FROM projects WHERE slug = %s AND id <> %s", (candidate, project["id"])).fetchone():
+                candidate = f"{base}-{suffix}"
+                suffix += 1
+            db.execute("UPDATE projects SET slug = %s WHERE id = %s", (candidate, project["id"]))
+        db.execute("CREATE UNIQUE INDEX IF NOT EXISTS projects_slug_unique ON projects (slug)")
+        db.execute("""CREATE TABLE IF NOT EXISTS project_attachments (
+            id BIGSERIAL PRIMARY KEY,
+            project_id BIGINT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+            file_id BIGINT NOT NULL REFERENCES uploaded_files(id) ON DELETE RESTRICT,
+            title TEXT NOT NULL,
+            display_order INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
         owner = db.execute("SELECT id FROM admins ORDER BY id LIMIT 1").fetchone()
         if owner is not None:
             db.execute("DELETE FROM admins WHERE id <> %s", (owner["id"],))
@@ -137,7 +156,8 @@ def delete_file_if_unattached(db: psycopg.Connection, file_id: int | None) -> No
     if file_id is None:
         return
     used = db.execute("""SELECT EXISTS(SELECT 1 FROM projects WHERE thumbnail_id = %s)
-        OR EXISTS(SELECT 1 FROM certifications WHERE certificate_file_id = %s) AS used""", (file_id, file_id)).fetchone()["used"]
+        OR EXISTS(SELECT 1 FROM certifications WHERE certificate_file_id = %s)
+        OR EXISTS(SELECT 1 FROM project_attachments WHERE file_id = %s) AS used""", (file_id, file_id, file_id)).fetchone()["used"]
     if not used:
         db.execute("DELETE FROM uploaded_files WHERE id = %s", (file_id,))
 
@@ -153,6 +173,11 @@ def json_bytes(value: object) -> bytes:
 
 def validate_url(value: str) -> bool:
     return not value or (len(value) <= 2048 and value.startswith(("https://", "http://")))
+
+
+def slugify(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value).encode("ascii", "ignore").decode("ascii").lower()
+    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9]+", "-", normalized)).strip("-")[:160].strip("-")
 
 
 def allow_auth_attempt(ip: str) -> bool:
@@ -192,10 +217,10 @@ class PortfolioHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_uploaded_file(self, file_record: dict[str, object], *, public: bool) -> None:
+    def send_uploaded_file(self, file_record: dict[str, object], *, public: bool, inline: bool = False) -> None:
         media_type = str(file_record["media_type"])
         filename = str(file_record["original_name"])
-        disposition = "inline" if media_type.startswith("image/") else "attachment"
+        disposition = "inline" if inline or media_type.startswith("image/") else "attachment"
         body = bytes(file_record["data"])
         self.send_response(HTTPStatus.OK)
         self.send_header("Content-Type", media_type)
@@ -314,6 +339,38 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                     rows = db.execute(f'SELECT * FROM "{table}" WHERE is_published IS TRUE ORDER BY sort_order, id DESC').fetchall()
             self.send_json(HTTPStatus.OK, [dict(row) for row in rows])
             return
+        detail_match = re.fullmatch(r"/api/public/projects/([a-z0-9]+(?:-[a-z0-9]+)*)", parsed.path)
+        if detail_match:
+            with connect_db() as db:
+                project = db.execute("""SELECT p.*, CASE WHEN f.id IS NULL THEN NULL ELSE '/media/' || f.id::text END AS thumbnail_url
+                    FROM projects p LEFT JOIN uploaded_files f ON f.id = p.thumbnail_id
+                    WHERE p.slug = %s AND p.is_published IS TRUE""", (detail_match.group(1),)).fetchone()
+                if project:
+                    attachments = db.execute("""SELECT a.id, a.title, a.display_order, a.created_at,
+                            f.media_type, f.byte_size, '/project-attachments/' || a.id::text AS url
+                        FROM project_attachments a JOIN uploaded_files f ON f.id = a.file_id
+                        WHERE a.project_id = %s AND EXISTS (SELECT 1 FROM projects p WHERE p.id = a.project_id AND p.is_published IS TRUE)
+                        ORDER BY a.display_order, a.id""", (project["id"],)).fetchall()
+                else:
+                    attachments = []
+            if not project:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "Project not found"})
+            else:
+                result = dict(project)
+                result["write_ups"] = [dict(row) for row in attachments]
+                self.send_json(HTTPStatus.OK, result)
+            return
+        attachment_public_match = re.fullmatch(r"/project-attachments/(\d+)", parsed.path)
+        if attachment_public_match:
+            with connect_db() as db:
+                file_record = db.execute("""SELECT f.* FROM project_attachments a
+                    JOIN uploaded_files f ON f.id = a.file_id JOIN projects p ON p.id = a.project_id
+                    WHERE a.id = %s AND p.is_published IS TRUE""", (int(attachment_public_match.group(1)),)).fetchone()
+            if file_record is None:
+                self.send_error(HTTPStatus.NOT_FOUND)
+            else:
+                self.send_uploaded_file(file_record, public=True, inline=True)
+            return
         media_match = re.fullmatch(r"/media/(\d+)", parsed.path)
         if media_match:
             media_id = int(media_match.group(1))
@@ -344,7 +401,16 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                 if file_record is None:
                     self.send_error(HTTPStatus.NOT_FOUND)
                 else:
-                    self.send_uploaded_file(file_record, public=False)
+                    self.send_uploaded_file(file_record, public=False, inline=True)
+                return
+            attachment_match = re.fullmatch(r"/api/admin/projects/(\d+)/attachments", parsed.path)
+            if attachment_match:
+                with connect_db() as db:
+                    rows = db.execute("""SELECT a.id, a.project_id, a.file_id, a.title, a.display_order, a.created_at,
+                            f.original_name, f.media_type, f.byte_size
+                        FROM project_attachments a JOIN uploaded_files f ON f.id = a.file_id
+                        WHERE a.project_id = %s ORDER BY a.display_order, a.id""", (int(attachment_match.group(1)),)).fetchall()
+                self.send_json(HTTPStatus.OK, [dict(row) for row in rows])
                 return
             match = re.fullmatch(r"/api/admin/(projects|certifications|activities)", parsed.path)
             if match:
@@ -483,6 +549,33 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                     VALUES (%s, %s, %s, %s) RETURNING id""", (filename, media_type, data, len(data))).fetchone()
             self.send_json(HTTPStatus.CREATED, {"id": row["id"], "filename": filename, "media_type": media_type, "byte_size": len(data)})
             return
+        attachment_match = re.fullmatch(r"/api/admin/projects/(\d+)/attachments", parsed.path)
+        if attachment_match:
+            if self.require_session() is None:
+                return
+            try:
+                filename, media_type, data = self.uploaded_file_body()
+                title = unquote(self.headers.get("X-Attachment-Title", "")).strip() or Path(filename).stem
+                display_order = int(self.headers.get("X-Display-Order", "0"))
+                if len(title) > 240:
+                    raise ValueError("Attachment title must be 240 characters or fewer")
+                if abs(display_order) > 1_000_000:
+                    raise ValueError("Display order is out of range")
+            except (ValueError, UnicodeDecodeError) as error:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error) or "Invalid attachment"})
+                return
+            project_id = int(attachment_match.group(1))
+            with connect_db() as db:
+                if not db.execute("SELECT 1 FROM projects WHERE id = %s", (project_id,)).fetchone():
+                    self.send_json(HTTPStatus.NOT_FOUND, {"error": "Project not found"})
+                    return
+                file_row = db.execute("""INSERT INTO uploaded_files (original_name, media_type, data, byte_size)
+                    VALUES (%s, %s, %s, %s) RETURNING id""", (filename, media_type, data, len(data))).fetchone()
+                row = db.execute("""INSERT INTO project_attachments (project_id, file_id, title, display_order)
+                    VALUES (%s, %s, %s, %s) RETURNING id, project_id, file_id, title, display_order, created_at""",
+                    (project_id, file_row["id"], title, display_order)).fetchone()
+            self.send_json(HTTPStatus.CREATED, {**dict(row), "original_name": filename, "media_type": media_type, "byte_size": len(data)})
+            return
         if parsed.path.startswith("/api/admin/"):
             current = self.require_session()
             if current is None:
@@ -498,6 +591,31 @@ class PortfolioHandler(BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         if not self.require_session():
             return
+        attachment_match = re.fullmatch(r"/api/admin/projects/(\d+)/attachments/(\d+)", urlparse(self.path).path)
+        if attachment_match:
+            try:
+                incoming = self.body_json()
+                title = str(incoming.get("title", "")).strip()
+                display_order = int(incoming.get("display_order", 0))
+                if not title or len(title) > 240:
+                    raise ValueError("Attachment title is required and must be 240 characters or fewer")
+                if abs(display_order) > 1_000_000:
+                    raise ValueError("Display order is out of range")
+            except (ValueError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as error:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error) or "Invalid request"})
+                return
+            with connect_db() as db:
+                cursor = db.execute("""UPDATE project_attachments SET title = %s, display_order = %s
+                    WHERE project_id = %s AND id = %s""", (title, display_order, int(attachment_match.group(1)), int(attachment_match.group(2))))
+                row = db.execute("""SELECT a.id, a.project_id, a.file_id, a.title, a.display_order, a.created_at,
+                    f.original_name, f.media_type, f.byte_size FROM project_attachments a
+                    JOIN uploaded_files f ON f.id = a.file_id WHERE a.project_id = %s AND a.id = %s""",
+                    (int(attachment_match.group(1)), int(attachment_match.group(2)))).fetchone() if cursor.rowcount else None
+            if row is None:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "Attachment not found"})
+            else:
+                self.send_json(HTTPStatus.OK, dict(row))
+            return
         match = re.fullmatch(r"/api/admin/(projects|certifications|activities)/(\d+)", urlparse(self.path).path)
         if not match:
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Not found"})
@@ -512,7 +630,8 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             file_id = int(file_match.group(1))
             with connect_db() as db:
                 used = db.execute("""SELECT EXISTS(SELECT 1 FROM projects WHERE thumbnail_id = %s)
-                    OR EXISTS(SELECT 1 FROM certifications WHERE certificate_file_id = %s) AS used""", (file_id, file_id)).fetchone()["used"]
+                    OR EXISTS(SELECT 1 FROM certifications WHERE certificate_file_id = %s)
+                    OR EXISTS(SELECT 1 FROM project_attachments WHERE file_id = %s) AS used""", (file_id, file_id, file_id)).fetchone()["used"]
                 if used:
                     self.send_json(HTTPStatus.CONFLICT, {"error": "Remove this file from its entry before deleting it"})
                     return
@@ -520,6 +639,18 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                 db.commit()
             if cursor.rowcount == 0:
                 self.send_json(HTTPStatus.NOT_FOUND, {"error": "File not found"})
+            else:
+                self.send_json(HTTPStatus.OK, {"ok": True})
+            return
+        attachment_match = re.fullmatch(r"/api/admin/projects/(\d+)/attachments/(\d+)", urlparse(self.path).path)
+        if attachment_match:
+            project_id, attachment_id = map(int, attachment_match.groups())
+            with connect_db() as db:
+                row = db.execute("DELETE FROM project_attachments WHERE project_id = %s AND id = %s RETURNING file_id", (project_id, attachment_id)).fetchone()
+                if row:
+                    delete_file_if_unattached(db, row["file_id"])
+            if row is None:
+                self.send_json(HTTPStatus.NOT_FOUND, {"error": "Attachment not found"})
             else:
                 self.send_json(HTTPStatus.OK, {"ok": True})
             return
@@ -532,9 +663,12 @@ class PortfolioHandler(BaseHTTPRequestHandler):
         with connect_db() as db:
             item = db.execute(f'SELECT "{file_column}" FROM "{table}" WHERE id = %s', (item_id,)).fetchone() if file_column else None
             file_id = item[file_column] if item else None
+            attachment_file_ids = [row["file_id"] for row in db.execute("SELECT file_id FROM project_attachments WHERE project_id = %s", (item_id,)).fetchall()] if table == "projects" else []
             cursor = db.execute(f'DELETE FROM "{table}" WHERE id = %s', (item_id,))
             db.commit()
             delete_file_if_unattached(db, file_id)
+            for attachment_file_id in attachment_file_ids:
+                delete_file_if_unattached(db, attachment_file_id)
             db.commit()
         if cursor.rowcount == 0:
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Entry not found"})
@@ -564,6 +698,14 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                     if kind == "url" and not validate_url(value):
                         raise ValueError(f"{name} must use http or https")
                     values[name] = value
+            slug = None
+            slug_was_supplied = False
+            if table == "projects":
+                requested_slug = str(incoming.get("slug", "")).strip()
+                slug_was_supplied = bool(requested_slug)
+                slug = slugify(requested_slug or str(values["title"]))
+                if not slug:
+                    raise ValueError("Project title must contain letters or numbers to create a slug")
             required = "title" if table == "projects" else "name"
             if not values.get(required):
                 raise ValueError(f"{required} is required")
@@ -574,6 +716,8 @@ class PortfolioHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError, UnicodeDecodeError, TypeError) as error:
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error) or "Invalid request"})
             return
+        if table == "projects":
+            values["slug"] = slug
         columns = list(values)
         with connect_db() as db:
             for name, kind in TABLES[table].items():
@@ -587,6 +731,28 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                         return
             file_column = next((name for name, kind in TABLES[table].items() if kind == "file"), None)
             previous_file_id = None
+            if table == "projects":
+                if item_id is not None and not slug_was_supplied:
+                    current = db.execute("SELECT slug FROM projects WHERE id = %s", (item_id,)).fetchone()
+                    if current:
+                        slug = current["slug"]
+                        values["slug"] = slug
+                if item_id is None and not slug_was_supplied:
+                    base = slug
+                    suffix = 2
+                    while db.execute("SELECT 1 FROM projects WHERE slug = %s", (slug,)).fetchone():
+                        tail = f"-{suffix}"
+                        slug = f"{base[:160-len(tail)].rstrip('-')}{tail}"
+                        suffix += 1
+                    values["slug"] = slug
+                    duplicate = None
+                elif item_id is None:
+                    duplicate = db.execute("SELECT id FROM projects WHERE slug = %s", (slug,)).fetchone()
+                else:
+                    duplicate = db.execute("SELECT id FROM projects WHERE slug = %s AND id <> %s", (slug, item_id)).fetchone()
+                if duplicate:
+                    self.send_json(HTTPStatus.CONFLICT, {"error": "That project slug is already in use"})
+                    return
             if item_id is not None and file_column:
                 existing = db.execute(f'SELECT "{file_column}" FROM "{table}" WHERE id = %s', (item_id,)).fetchone()
                 previous_file_id = existing[file_column] if existing else None
@@ -639,7 +805,9 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             file = ROOT / "index.html"
         elif path == "/admin":
             file = ROOT / "admin.html"
-        elif path in ("/styles.css", "/extra.css", "/script.js", "/admin.css", "/admin-extra.css", "/admin.js"):
+        elif re.fullmatch(r"/projects/[a-z0-9]+(?:-[a-z0-9]+)*", path):
+            file = ROOT / "project.html"
+        elif path in ("/styles.css", "/extra.css", "/script.js", "/admin.css", "/admin-extra.css", "/writeups-admin.css", "/admin.js", "/project.css", "/project.js"):
             file = ROOT / path.lstrip("/")
         elif path == "/assets/portfolio-hero.png":
             file = ASSET_ROOT / "portfolio-hero.png"
