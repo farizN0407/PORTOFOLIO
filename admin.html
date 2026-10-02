@@ -10,7 +10,12 @@
     <script src="admin.js" defer></script>
   </head>
   <body>
-    <main class="auth-layout" id="auth-layout">
+    <div class="auth-layout" id="checking-state" style="grid-template-columns:1fr;place-items:center"><p class="login-copy">Checking admin setup…</p></div>
+    <main class="auth-layout hidden" id="setup-layout">
+      <div class="auth-art"><a href="/" class="mark">F<span>.</span></a><span class="auth-art-label">PRIVATE WORKSPACE / 01</span><p>Make it yours.<br /><em>Keep it private.</em></p><span class="auth-art-foot">FARIZ NARARYA ABHYASA<br />CYBER SECURITY</span></div>
+      <form class="login-card" id="setup-form"><p class="eyebrow">ONE-TIME ADMIN SETUP</p><h1>Create<br />your login.</h1><p class="login-copy">Create the first admin account. Setup closes permanently once this account is saved.</p><label>Email address<input type="email" name="email" autocomplete="username" maxlength="254" required /></label><label>Password<input type="password" name="password" autocomplete="new-password" minlength="14" maxlength="1024" required /></label><label>Confirm password<input type="password" name="password_confirmation" autocomplete="new-password" minlength="14" maxlength="1024" required /></label><button class="button button-dark" type="submit">CREATE ADMIN <span>↗</span></button><p class="form-message" id="setup-message" role="status"></p><a href="/" class="return-link">← BACK TO PORTFOLIO</a></form>
+    </main>
+    <main class="auth-layout hidden" id="auth-layout">
       <div class="auth-art"><a href="/" class="mark">F<span>.</span></a><span class="auth-art-label">PRIVATE WORKSPACE / 01</span><p>Keep the signal.<br /><em>Share the work.</em></p><span class="auth-art-foot">FARIZ NARARYA ABHYASA<br />CYBER SECURITY</span></div>
       <form class="login-card" id="login-form"><p class="eyebrow">PORTFOLIO CONTENT MANAGER</p><h1>Welcome<br />back.</h1><p class="login-copy">Sign in to manage the work shown on your portfolio.</p><label>Email address<input type="email" name="email" autocomplete="username" required /></label><label>Password<input type="password" name="password" autocomplete="current-password" required /></label><button class="button button-dark" type="submit">SIGN IN <span>↗</span></button><p class="form-message" id="login-message" role="status"></p><a href="/" class="return-link">← BACK TO PORTFOLIO</a></form>
     </main>

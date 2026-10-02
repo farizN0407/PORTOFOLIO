@@ -1,7 +1,11 @@
 const authLayout = document.querySelector("#auth-layout");
+const setupLayout = document.querySelector("#setup-layout");
+const checkingState = document.querySelector("#checking-state");
 const dashboard = document.querySelector("#dashboard");
 const loginForm = document.querySelector("#login-form");
 const loginMessage = document.querySelector("#login-message");
+const setupForm = document.querySelector("#setup-form");
+const setupMessage = document.querySelector("#setup-message");
 const entryList = document.querySelector("#entry-list");
 const emptyState = document.querySelector("#empty-state");
 const dialog = document.querySelector("#entry-dialog");
@@ -76,21 +80,67 @@ async function api(url, options = {}) {
 }
 
 function showDashboard(email) {
+  checkingState.classList.add("hidden");
+  setupLayout.classList.add("hidden");
   authLayout.classList.add("hidden");
   dashboard.classList.remove("hidden");
   document.querySelector("#admin-email").textContent = email;
   loadSection(currentSection);
 }
 
-async function resumeSession() {
+async function initializeAdminPage() {
   try {
     const session = await api("/api/admin/session");
     csrfToken = session.csrf;
     showDashboard(session.email);
   } catch {
-    authLayout.classList.remove("hidden");
+    try {
+      const status = await api("/api/admin/status");
+      checkingState.classList.add("hidden");
+      if (status.setup_required) {
+        csrfToken = status.setup_csrf;
+        setupLayout.classList.remove("hidden");
+      } else {
+        authLayout.classList.remove("hidden");
+      }
+    } catch (error) {
+      checkingState.replaceChildren(document.createTextNode(`Unable to load admin page: ${error.message}`));
+    }
   }
 }
+
+setupForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  setupMessage.textContent = "Creating admin account…";
+  const form = new FormData(setupForm);
+  const email = String(form.get("email") || "").trim().toLowerCase();
+  const password = String(form.get("password") || "");
+  const passwordConfirmation = String(form.get("password_confirmation") || "");
+  if (password !== passwordConfirmation) {
+    setupMessage.textContent = "Passwords do not match.";
+    return;
+  }
+  try {
+    await api("/api/admin/setup", {
+      method: "POST",
+      body: JSON.stringify({ email, password, password_confirmation: passwordConfirmation }),
+    });
+    csrfToken = "";
+    setupForm.reset();
+    setupLayout.classList.add("hidden");
+    authLayout.classList.remove("hidden");
+    loginForm.elements.namedItem("email").value = email;
+    loginMessage.textContent = "Admin account created. Sign in to continue.";
+    loginForm.elements.namedItem("password").focus();
+  } catch (error) {
+    setupMessage.textContent = error.message;
+    if (error.message === "Admin setup has already been completed") {
+      csrfToken = "";
+      setupLayout.classList.add("hidden");
+      authLayout.classList.remove("hidden");
+    }
+  }
+});
 
 async function loadSection(name) {
   currentSection = name;
@@ -342,4 +392,4 @@ document.querySelector("#logout-button").addEventListener("click", async () => {
   }
 });
 
-resumeSession();
+initializeAdminPage();

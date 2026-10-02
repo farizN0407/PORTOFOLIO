@@ -36,8 +36,6 @@ load_local_env()
 HOST = os.environ.get("PORTFOLIO_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
 APP_ENV = os.environ.get("APP_ENV", "development").lower()
-ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
 SESSION_SECRET = os.environ.get("APP_SECRET", "")
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE", "false").lower() == "true"
@@ -45,6 +43,8 @@ MAX_BODY = 128 * 1024
 MAX_UPLOAD_BYTES = 5 * 1024 * 1024
 SESSION_SECONDS = 60 * 60 * 8
 PBKDF2_ROUNDS = 310_000
+SETUP_COOKIE = "portfolio_setup"
+SETUP_LOCK_ID = 739_105_221
 
 TABLES = {
     "projects": {
@@ -76,15 +76,19 @@ def init_db() -> None:
         raise RuntimeError("Set COOKIE_SECURE=true when running in production over HTTPS.")
     if not SESSION_SECRET or SESSION_SECRET == "replace-with-a-long-random-secret":
         raise RuntimeError("Set APP_SECRET to a unique random value in .env before starting the server.")
-    if not ADMIN_EMAIL or ADMIN_EMAIL == "admin@example.com":
-        raise RuntimeError("Set ADMIN_EMAIL to your own email in .env before starting the server.")
-    if len(ADMIN_PASSWORD) < 14 or ADMIN_PASSWORD == "replace-with-a-unique-strong-password":
-        raise RuntimeError("Set ADMIN_PASSWORD to a unique password with at least 14 characters in .env.")
     with connect_db() as db:
         db.execute("""CREATE TABLE IF NOT EXISTS admins (
             id BIGSERIAL PRIMARY KEY, email TEXT NOT NULL UNIQUE,
             salt BYTEA NOT NULL, password_hash BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS admin_setup_state (
+            id SMALLINT PRIMARY KEY CHECK (id = 1),
+            completed BOOLEAN NOT NULL DEFAULT FALSE,
+            completed_at TIMESTAMPTZ
+        )""")
+        db.execute("""INSERT INTO admin_setup_state (id, completed)
+            SELECT 1, EXISTS(SELECT 1 FROM admins)
+            ON CONFLICT (id) DO UPDATE SET completed = admin_setup_state.completed OR EXCLUDED.completed""")
         db.execute("""CREATE TABLE IF NOT EXISTS admin_sessions (
             token_hash BYTEA PRIMARY KEY,
             admin_id BIGINT NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
@@ -120,16 +124,10 @@ def init_db() -> None:
             for name, kind in fields.items():
                 if kind == "file":
                     db.execute(f'ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS "{name}" BIGINT REFERENCES uploaded_files(id) ON DELETE SET NULL')
-        salt = secrets.token_bytes(16)
-        digest = hashlib.pbkdf2_hmac("sha256", ADMIN_PASSWORD.encode(), salt, PBKDF2_ROUNDS)
         owner = db.execute("SELECT id FROM admins ORDER BY id LIMIT 1").fetchone()
-        if owner is None:
-            owner = db.execute("INSERT INTO admins (email, salt, password_hash) VALUES (%s, %s, %s) RETURNING id", (ADMIN_EMAIL, salt, digest)).fetchone()
-        else:
+        if owner is not None:
             db.execute("DELETE FROM admins WHERE id <> %s", (owner["id"],))
-            db.execute("UPDATE admins SET email = %s, salt = %s, password_hash = %s WHERE id = %s", (ADMIN_EMAIL, salt, digest, owner["id"]))
-        db.execute("DELETE FROM admin_sessions")
-        print("Single admin account configured")
+        print("Admin setup available" if owner is None else "Single admin account ready")
         activity_count = db.execute("SELECT COUNT(*) AS count FROM activities").fetchone()["count"]
         if activity_count == 0:
             db.execute("INSERT INTO activities (name, role, is_published, sort_order) VALUES (%s, %s, TRUE, 0)", ("BINUS Cyber Security Community", "Member"))
@@ -155,6 +153,23 @@ def json_bytes(value: object) -> bytes:
 
 def validate_url(value: str) -> bool:
     return not value or (len(value) <= 2048 and value.startswith(("https://", "http://")))
+
+
+def allow_auth_attempt(ip: str) -> bool:
+    now = time.time()
+    attempts = [stamp for stamp in RATE_LIMITS.get(ip, []) if now - stamp < 300]
+    if len(attempts) >= 8:
+        RATE_LIMITS[ip] = attempts
+        return False
+    RATE_LIMITS[ip] = attempts + [now]
+    return True
+
+
+def admin_setup_available() -> bool:
+    with connect_db() as db:
+        row = db.execute("""SELECT completed OR EXISTS(SELECT 1 FROM admins) AS is_closed
+            FROM admin_setup_state WHERE id = 1""").fetchone()
+        return not row["is_closed"]
 
 
 class PortfolioHandler(BaseHTTPRequestHandler):
@@ -273,6 +288,16 @@ class PortfolioHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/admin/status":
+            setup_required = admin_setup_available()
+            if setup_required:
+                setup_token = secrets.token_urlsafe(32)
+                secure = "; Secure" if COOKIE_SECURE else ""
+                self.send_json(HTTPStatus.OK, {"setup_required": True, "setup_csrf": setup_token}, f"{SETUP_COOKIE}={setup_token}; Path=/; Max-Age=600; HttpOnly; SameSite=Strict{secure}")
+            else:
+                secure = "; Secure" if COOKIE_SECURE else ""
+                self.send_json(HTTPStatus.OK, {"setup_required": False}, f"{SETUP_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{secure}")
+            return
         match = re.fullmatch(r"/api/public/(projects|certifications|activities)", parsed.path)
         if match:
             table = match.group(1)
@@ -341,6 +366,58 @@ class PortfolioHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:
         parsed = urlparse(self.path)
+        if parsed.path == "/api/admin/setup":
+            origin = self.headers.get("Origin", "")
+            host = self.headers.get("Host", "")
+            if not origin or urlparse(origin).netloc != host:
+                self.send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid request origin"})
+                return
+            ip = self.client_address[0]
+            if not allow_auth_attempt(ip):
+                self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Too many attempts. Try again in a few minutes."})
+                return
+            cookies = self.headers.get("Cookie", "")
+            setup_cookie = next((piece.strip()[len(SETUP_COOKIE) + 1:] for piece in cookies.split(";") if piece.strip().startswith(f"{SETUP_COOKIE}=")), "")
+            setup_header = self.headers.get("X-CSRF-Token", "")
+            if not setup_cookie or not hmac.compare_digest(setup_cookie, setup_header):
+                self.send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid security token"})
+                return
+            secure = "; Secure" if COOKIE_SECURE else ""
+            if not admin_setup_available():
+                self.send_json(HTTPStatus.CONFLICT, {"error": "Admin setup has already been completed", "setup_required": False}, f"{SETUP_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{secure}")
+                return
+            try:
+                payload = self.body_json()
+            except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Invalid request"})
+                return
+            email = str(payload.get("email", "")).strip().lower()
+            password = str(payload.get("password", ""))
+            confirmation = str(payload.get("password_confirmation", ""))
+            if len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email):
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Enter a valid email address"})
+                return
+            if len(password) < 14 or len(password) > 1024:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Use a password with at least 14 characters"})
+                return
+            if password != confirmation:
+                self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Passwords do not match"})
+                return
+            salt = secrets.token_bytes(16)
+            digest = hashlib.pbkdf2_hmac("sha256", password.encode(), salt, PBKDF2_ROUNDS)
+            with connect_db() as db:
+                db.execute("SELECT pg_advisory_xact_lock(%s)", (SETUP_LOCK_ID,))
+                setup_state = db.execute("SELECT completed FROM admin_setup_state WHERE id = 1 FOR UPDATE").fetchone()
+                admin_present = db.execute("SELECT EXISTS(SELECT 1 FROM admins) AS present").fetchone()["present"]
+                if setup_state["completed"] or admin_present:
+                    self.send_json(HTTPStatus.CONFLICT, {"error": "Admin setup has already been completed", "setup_required": False}, f"{SETUP_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{secure}")
+                    return
+                db.execute("INSERT INTO admins (email, salt, password_hash) VALUES (%s, %s, %s)", (email, salt, digest))
+                db.execute("UPDATE admin_setup_state SET completed = TRUE, completed_at = CURRENT_TIMESTAMP WHERE id = 1")
+            RATE_LIMITS.pop(ip, None)
+            secure = "; Secure" if COOKIE_SECURE else ""
+            self.send_json(HTTPStatus.CREATED, {"created": True}, f"{SETUP_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{secure}")
+            return
         if parsed.path == "/api/admin/login":
             origin = self.headers.get("Origin", "")
             host = self.headers.get("Host", "")
@@ -348,13 +425,9 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.FORBIDDEN, {"error": "Invalid request origin"})
                 return
             ip = self.client_address[0]
-            now = time.time()
-            attempts = [stamp for stamp in RATE_LIMITS.get(ip, []) if now - stamp < 300]
-            if len(attempts) >= 8:
-                RATE_LIMITS[ip] = attempts
+            if not allow_auth_attempt(ip):
                 self.send_json(HTTPStatus.TOO_MANY_REQUESTS, {"error": "Too many attempts. Try again in a few minutes."})
                 return
-            RATE_LIMITS[ip] = attempts + [now]
             try:
                 payload = self.body_json()
             except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
@@ -363,7 +436,7 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             email = str(payload.get("email", "")).strip().lower()
             password = str(payload.get("password", ""))
             with connect_db() as db:
-                admin = db.execute("SELECT * FROM admins WHERE email = %s", (email,)).fetchone() if hmac.compare_digest(email, ADMIN_EMAIL) else None
+                admin = db.execute("SELECT * FROM admins WHERE email = %s", (email,)).fetchone()
             valid = False
             if admin:
                 digest = hashlib.pbkdf2_hmac("sha256", password.encode(), admin["salt"], PBKDF2_ROUNDS)
