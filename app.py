@@ -9,7 +9,7 @@ import os
 import re
 import secrets
 import time
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -35,6 +35,7 @@ def load_local_env() -> None:
 load_local_env()
 HOST = os.environ.get("PORTFOLIO_HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8000"))
+APP_ENV = os.environ.get("APP_ENV", "development").lower()
 ADMIN_EMAIL = os.environ.get("ADMIN_EMAIL", "").strip().lower()
 ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "")
 DATABASE_URL = os.environ.get("DATABASE_URL", "")
@@ -62,7 +63,6 @@ TABLES = {
     },
 }
 RATE_LIMITS: dict[str, list[float]] = {}
-SESSIONS: dict[str, dict[str, object]] = {}
 
 
 def connect_db() -> psycopg.Connection:
@@ -72,12 +72,25 @@ def connect_db() -> psycopg.Connection:
 
 
 def init_db() -> None:
+    if APP_ENV == "production" and not COOKIE_SECURE:
+        raise RuntimeError("Set COOKIE_SECURE=true when running in production over HTTPS.")
     if not SESSION_SECRET or SESSION_SECRET == "replace-with-a-long-random-secret":
         raise RuntimeError("Set APP_SECRET to a unique random value in .env before starting the server.")
+    if not ADMIN_EMAIL or ADMIN_EMAIL == "admin@example.com":
+        raise RuntimeError("Set ADMIN_EMAIL to your own email in .env before starting the server.")
+    if len(ADMIN_PASSWORD) < 14 or ADMIN_PASSWORD == "replace-with-a-unique-strong-password":
+        raise RuntimeError("Set ADMIN_PASSWORD to a unique password with at least 14 characters in .env.")
     with connect_db() as db:
         db.execute("""CREATE TABLE IF NOT EXISTS admins (
             id BIGSERIAL PRIMARY KEY, email TEXT NOT NULL UNIQUE,
             salt BYTEA NOT NULL, password_hash BYTEA NOT NULL, created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )""")
+        db.execute("""CREATE TABLE IF NOT EXISTS admin_sessions (
+            token_hash BYTEA PRIMARY KEY,
+            admin_id BIGINT NOT NULL REFERENCES admins(id) ON DELETE CASCADE,
+            csrf_token TEXT NOT NULL,
+            expires_at TIMESTAMPTZ NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )""")
         db.execute("""CREATE TABLE IF NOT EXISTS uploaded_files (
             id BIGSERIAL PRIMARY KEY,
@@ -107,12 +120,16 @@ def init_db() -> None:
             for name, kind in fields.items():
                 if kind == "file":
                     db.execute(f'ALTER TABLE "{table}" ADD COLUMN IF NOT EXISTS "{name}" BIGINT REFERENCES uploaded_files(id) ON DELETE SET NULL')
-        count = db.execute("SELECT COUNT(*) AS count FROM admins").fetchone()["count"]
-        if count == 0 and ADMIN_EMAIL and ADMIN_PASSWORD:
-            salt = secrets.token_bytes(16)
-            digest = hashlib.pbkdf2_hmac("sha256", ADMIN_PASSWORD.encode(), salt, PBKDF2_ROUNDS)
-            db.execute("INSERT INTO admins (email, salt, password_hash) VALUES (%s, %s, %s)", (ADMIN_EMAIL, salt, digest))
-            print(f"Admin account initialized for {ADMIN_EMAIL}")
+        salt = secrets.token_bytes(16)
+        digest = hashlib.pbkdf2_hmac("sha256", ADMIN_PASSWORD.encode(), salt, PBKDF2_ROUNDS)
+        owner = db.execute("SELECT id FROM admins ORDER BY id LIMIT 1").fetchone()
+        if owner is None:
+            owner = db.execute("INSERT INTO admins (email, salt, password_hash) VALUES (%s, %s, %s) RETURNING id", (ADMIN_EMAIL, salt, digest)).fetchone()
+        else:
+            db.execute("DELETE FROM admins WHERE id <> %s", (owner["id"],))
+            db.execute("UPDATE admins SET email = %s, salt = %s, password_hash = %s WHERE id = %s", (ADMIN_EMAIL, salt, digest, owner["id"]))
+        db.execute("DELETE FROM admin_sessions")
+        print("Single admin account configured")
         activity_count = db.execute("SELECT COUNT(*) AS count FROM activities").fetchone()["count"]
         if activity_count == 0:
             db.execute("INSERT INTO activities (name, role, is_published, sort_order) VALUES (%s, %s, TRUE, 0)", ("BINUS Cyber Security Community", "Member"))
@@ -226,12 +243,17 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             return None
         sid, signature = token.split(".", 1)
         expected = hmac.new(SESSION_SECRET.encode(), sid.encode(), hashlib.sha256).hexdigest()
-        data = SESSIONS.get(sid)
-        if not data or not hmac.compare_digest(signature, expected) or float(data["expires"]) < time.time():
-            SESSIONS.pop(sid, None)
+        if not hmac.compare_digest(signature, expected):
             return None
-        data["expires"] = time.time() + SESSION_SECONDS
-        return data
+        token_hash = hashlib.sha256(sid.encode()).digest()
+        with connect_db() as db:
+            row = db.execute("""SELECT a.email, s.csrf_token FROM admin_sessions s
+                JOIN admins a ON a.id = s.admin_id
+                WHERE s.token_hash = %s AND s.expires_at > CURRENT_TIMESTAMP""", (token_hash,)).fetchone()
+            if row is None:
+                return None
+            db.execute("UPDATE admin_sessions SET expires_at = %s WHERE token_hash = %s", (datetime.now(timezone.utc) + timedelta(seconds=SESSION_SECONDS), token_hash))
+        return {"email": row["email"], "csrf": row["csrf_token"]}
 
     def require_session(self) -> dict[str, object] | None:
         current = self.session()
@@ -341,7 +363,7 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             email = str(payload.get("email", "")).strip().lower()
             password = str(payload.get("password", ""))
             with connect_db() as db:
-                admin = db.execute("SELECT * FROM admins WHERE email = %s", (email,)).fetchone()
+                admin = db.execute("SELECT * FROM admins WHERE email = %s", (email,)).fetchone() if hmac.compare_digest(email, ADMIN_EMAIL) else None
             valid = False
             if admin:
                 digest = hashlib.pbkdf2_hmac("sha256", password.encode(), admin["salt"], PBKDF2_ROUNDS)
@@ -354,7 +376,10 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             RATE_LIMITS.pop(ip, None)
             sid = secrets.token_urlsafe(32)
             csrf = secrets.token_urlsafe(32)
-            SESSIONS[sid] = {"email": email, "csrf": csrf, "expires": now + SESSION_SECONDS}
+            expires_at = datetime.now(timezone.utc) + timedelta(seconds=SESSION_SECONDS)
+            token_hash = hashlib.sha256(sid.encode()).digest()
+            with connect_db() as db:
+                db.execute("INSERT INTO admin_sessions (token_hash, admin_id, csrf_token, expires_at) VALUES (%s, %s, %s, %s)", (token_hash, admin["id"], csrf, expires_at))
             signature = hmac.new(SESSION_SECRET.encode(), sid.encode(), hashlib.sha256).hexdigest()
             secure = "; Secure" if COOKIE_SECURE else ""
             self.send_json(HTTPStatus.OK, {"email": email, "csrf": csrf}, f"portfolio={sid}.{signature}; Path=/; Max-Age={SESSION_SECONDS}; HttpOnly; SameSite=Strict{secure}")
@@ -366,7 +391,9 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             cookies = self.headers.get("Cookie", "")
             token = next((piece.strip()[10:] for piece in cookies.split(";") if piece.strip().startswith("portfolio=")), "")
             sid = token.split(".", 1)[0]
-            SESSIONS.pop(sid, None)
+            token_hash = hashlib.sha256(sid.encode()).digest()
+            with connect_db() as db:
+                db.execute("DELETE FROM admin_sessions WHERE token_hash = %s", (token_hash,))
             secure = "; Secure" if COOKIE_SECURE else ""
             self.send_json(HTTPStatus.OK, {"ok": True}, f"portfolio=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict{secure}")
             return
@@ -556,6 +583,8 @@ class PortfolioHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", mime)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        if path == "/admin":
+            self.send_header("X-Robots-Tag", "noindex, nofollow, noarchive")
         self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
         self.end_headers()
         self.wfile.write(body)

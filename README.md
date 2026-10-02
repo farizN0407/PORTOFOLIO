@@ -8,7 +8,7 @@ Requires Python 3.10+ and a PostgreSQL database. The app does not create a datab
 
 1. Copy `.env.example` to `.env`.
 2. Replace `DATABASE_URL` with your PostgreSQL connection string. Keep `sslmode=require` for hosted databases when supported.
-3. Set `ADMIN_EMAIL`, a unique `ADMIN_PASSWORD`, and a long random `APP_SECRET`. Keep `.env` private; it is ignored by Git.
+3. Set `ADMIN_EMAIL`, a unique `ADMIN_PASSWORD` of at least 14 characters, and a long random `APP_SECRET`. Keep `.env` private; it is ignored by Git.
 4. Install the PostgreSQL driver and start the app:
 
    ```powershell
@@ -28,7 +28,20 @@ When hosting behind HTTPS, set `COOKIE_SECURE=true`. Use a secret `APP_SECRET`, 
 
 The dashboard supports create, edit, delete, publish/hide, and display ordering for projects, certifications, and activities. Project images and certification documents can be uploaded from the entry editor. Accepted formats are PNG, JPG, WEBP, and PDF, with a 5 MB per-file limit. The binary file and its metadata are stored in PostgreSQL `BYTEA`; the public media route serves an attachment only while its linked entry is published. Removing or replacing an attachment also removes the old database row when it is no longer in use.
 
-Only an authenticated admin session can upload, preview unpublished files, or modify and delete content. Login uses signed, HTTP-only, SameSite cookies, server-side sessions, CSRF tokens, login attempt throttling, input validation, and parameterized PostgreSQL statements. Public API routes are read-only. Keep database backups sized for uploaded files as well as table data.
+Only the email configured as `ADMIN_EMAIL` can sign in. There is no public sign-up or admin account management. Only an authenticated admin session can upload, preview unpublished files, or modify and delete content. Login uses signed, HTTP-only, SameSite cookies, PostgreSQL-backed sessions, CSRF tokens, login attempt throttling, input validation, and parameterized PostgreSQL statements. Public API routes are read-only. Keep database backups sized for uploaded files as well as table data.
+
+## Public deployment
+
+The included Dockerfile binds to `0.0.0.0`, enables production mode, and marks admin cookies `Secure`. Deploy the image on a Docker-capable host with HTTPS and configure these environment variables through the host's secret settings:
+
+- `DATABASE_URL` — PostgreSQL connection string
+- `ADMIN_EMAIL` — your sign-in email; only this account can authenticate
+- `ADMIN_PASSWORD` — unique password, 14 or more characters
+- `APP_SECRET` — long random signing secret
+- `APP_ENV=production`, `COOKIE_SECURE=true`, `PORTFOLIO_HOST=0.0.0.0`
+- `PORT` — usually supplied by the hosting platform
+
+The public portfolio can be viewed without signing in. `/admin` presents a sign-in form, while admin API data and uploads remain behind authentication; the admin page is marked `noindex`. The app does not provision a hosting service or PostgreSQL instance. Keep the database URL and admin credentials in the host's secret settings, never in the repository.
 
 ## Content notes
 
@@ -39,7 +52,8 @@ Only an authenticated admin session can upload, preview unpublished files, or mo
 
 ## Files
 
-- `app.py` — local web server, PostgreSQL schema initialization, public API, protected admin API
+- `app.py` — web server, PostgreSQL schema initialization, public API, protected admin API and file handling
+- `Dockerfile`, `.dockerignore` — container deployment
 - `requirements.txt` — Psycopg 3 PostgreSQL driver
 - `index.html`, `styles.css`, `extra.css`, `script.js` — public portfolio
 - `admin.html`, `admin.css`, `admin-extra.css`, `admin.js` — content manager
