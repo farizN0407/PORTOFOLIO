@@ -26,10 +26,10 @@ const schema = {
       ["github_url", "GitHub URL", "url", false, false],
       ["external_url", "External URL", "url", false, false],
       ["featured", "Featured project", "checkbox", false, false],
-      ["thumbnail_id", "Project image", "file", true, false],
+      ["thumbnail_id", "Project thumbnail · image only", "file", true, false],
     ],
     fileField: "thumbnail_id",
-    fileAccept: "image/png,image/jpeg,image/webp",
+    fileAccept: "image/png,image/jpeg,image/webp,.png,.jpg,.jpeg,.webp",
     detail: (item) => item.summary,
     category: (item) => item.category || "PROJECT",
   },
@@ -69,6 +69,19 @@ let currentSection = "projects";
 let csrfToken = "";
 let items = [];
 let editingId = null;
+let thumbnailPreviewUrl = "";
+
+const thumbnailMimeByExtension = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+};
+
+function isValidThumbnail(file) {
+  const extension = file.name.slice(file.name.lastIndexOf(".")).toLowerCase();
+  return thumbnailMimeByExtension[extension] === file.type;
+}
 
 async function api(url, options = {}) {
   const headers = new Headers(options.headers || {});
@@ -324,10 +337,37 @@ function buildFields() {
       const status = document.createElement("p");
       status.className = "attachment-status";
       status.id = "attachment-status";
-      status.textContent = "No file attached. Choose a PNG, JPG, WEBP, or PDF up to 5 MB.";
+      const isProjectThumbnail = currentSection === "projects" && name === "thumbnail_id";
+      status.textContent = isProjectThumbnail
+        ? "Image only: PNG, JPG, JPEG, or WEBP · up to 5 MB. PDFs belong in Write-ups / Attachments below."
+        : "Choose a PNG, JPG, WEBP, or PDF up to 5 MB.";
+      const preview = isProjectThumbnail ? document.createElement("img") : null;
+      if (preview) {
+        preview.className = "thumbnail-preview hidden";
+        preview.alt = "Project thumbnail preview";
+        preview.hidden = true;
+        preview.style.maxWidth = "180px";
+        preview.style.maxHeight = "115px";
+        preview.style.objectFit = "cover";
+        preview.style.border = "1px solid rgba(255,255,255,.2)";
+        preview.style.marginTop = "8px";
+      }
       input.addEventListener("change", () => {
         const selected = input.files?.[0];
         if (selected) {
+          if (isProjectThumbnail && !isValidThumbnail(selected)) {
+            status.textContent = "Thumbnail must be an image (PNG, JPG, JPEG, or WEBP).";
+            preview.classList.add("hidden");
+            preview.hidden = true;
+            return;
+          }
+          if (isProjectThumbnail) {
+            if (thumbnailPreviewUrl) URL.revokeObjectURL(thumbnailPreviewUrl);
+            thumbnailPreviewUrl = URL.createObjectURL(selected);
+            preview.src = thumbnailPreviewUrl;
+            preview.classList.remove("hidden");
+            preview.hidden = false;
+          }
           status.textContent = `Ready to upload: ${selected.name}`;
           remove.checked = false;
         }
@@ -340,14 +380,28 @@ function buildFields() {
       remove.addEventListener("change", () => {
         if (remove.checked) {
           input.value = "";
-          hidden.value = "";
           status.textContent = "The attached file will be removed when you save.";
+          if (preview) {
+            preview.classList.add("hidden");
+            preview.hidden = true;
+          }
         } else if (!input.files?.length) {
-          status.textContent = "No new file selected.";
+          if (preview && hidden.value) {
+            preview.src = `/api/admin/files/${hidden.value}`;
+            preview.classList.remove("hidden");
+            preview.hidden = false;
+            status.textContent = "Current thumbnail will be kept.";
+          } else {
+            status.textContent = isProjectThumbnail
+              ? "Image only: PNG, JPG, JPEG, or WEBP · up to 5 MB. PDFs belong in Write-ups / Attachments below."
+              : "No new file selected.";
+          }
         }
       });
-      removeLabel.append(remove, document.createTextNode("Remove attached file"));
-      wrapper.append(hidden, input, status, removeLabel);
+      removeLabel.append(remove, document.createTextNode(isProjectThumbnail ? "Remove current thumbnail" : "Remove attached file"));
+      wrapper.append(hidden, input, status);
+      if (preview) wrapper.append(preview);
+      wrapper.append(removeLabel);
     } else if (type === "checkbox") {
       const input = document.createElement("input");
       input.type = type;
@@ -388,6 +442,14 @@ function openDialog(item = null) {
       link.rel = "noreferrer";
       link.textContent = item.attachment_name || "View attached file";
       status.replaceChildren(document.createTextNode("Current file: "), link);
+      if (currentSection === "projects") {
+        const preview = document.querySelector(".thumbnail-preview");
+        if (preview) {
+          preview.src = `/api/admin/files/${item[fileField]}`;
+          preview.classList.remove("hidden");
+          preview.hidden = false;
+        }
+      }
     }
   }
   dialog.showModal();
@@ -429,6 +491,10 @@ document.querySelectorAll("#section-nav button").forEach((button) => {
 document.querySelector("#new-button").addEventListener("click", () => openDialog());
 document.querySelector("#close-dialog").addEventListener("click", () => dialog.close());
 document.querySelector("#cancel-dialog").addEventListener("click", () => dialog.close());
+dialog.addEventListener("close", () => {
+  if (thumbnailPreviewUrl) URL.revokeObjectURL(thumbnailPreviewUrl);
+  thumbnailPreviewUrl = "";
+});
 
 entryForm.addEventListener("submit", async (event) => {
   event.preventDefault();
@@ -451,6 +517,9 @@ entryForm.addEventListener("submit", async (event) => {
       const existingFileId = entryForm.elements.namedItem(fileField).value;
       if (selectedFile) {
         if (selectedFile.size > 5 * 1024 * 1024) throw new Error("Files must be 5 MB or smaller");
+        if (currentSection === "projects" && fileField === "thumbnail_id" && !isValidThumbnail(selectedFile)) {
+          throw new Error("Thumbnail must be an image (PNG, JPG, JPEG, or WEBP).");
+        }
         const response = await fetch("/api/admin/files", {
           method: "POST",
           body: selectedFile,

@@ -726,8 +726,8 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                     if file_record is None:
                         self.send_json(HTTPStatus.BAD_REQUEST, {"error": f"{name} refers to a file that does not exist"})
                         return
-                    if table == "projects" and not file_record["media_type"].startswith("image/"):
-                        self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Project thumbnails must be images"})
+                    if table == "projects" and file_record["media_type"] not in {"image/png", "image/jpeg", "image/webp"}:
+                        self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Thumbnail must be an image (PNG, JPG, JPEG, or WEBP)."})
                         return
             file_column = next((name for name, kind in TABLES[table].items() if kind == "file"), None)
             previous_file_id = None
@@ -805,9 +805,11 @@ class PortfolioHandler(BaseHTTPRequestHandler):
             file = ROOT / "index.html"
         elif path == "/admin":
             file = ROOT / "admin.html"
+        elif path == "/about":
+            file = ROOT / "about.html"
         elif re.fullmatch(r"/projects/[a-z0-9]+(?:-[a-z0-9]+)*", path):
             file = ROOT / "project.html"
-        elif path in ("/styles.css", "/extra.css", "/script.js", "/admin.css", "/admin-extra.css", "/writeups-admin.css", "/admin.js", "/project.css", "/project.js"):
+        elif path in ("/styles.css", "/extra.css", "/script.js", "/admin.css", "/admin-extra.css", "/writeups-admin.css", "/admin.js", "/project.css", "/project.js", "/about.css", "/about.js"):
             file = ROOT / path.lstrip("/")
         elif path == "/assets/portfolio-hero.png":
             file = ASSET_ROOT / "portfolio-hero.png"
