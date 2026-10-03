@@ -207,6 +207,14 @@ function renderPublicProfile(profile) {
   const aboutGithub = document.querySelector("#about-github-cta");
   const topGithub = document.querySelector("#top-github-link");
   if (!contactLinks) return;
+  const homepageGpaFact = document.querySelector("#homepage-gpa-fact");
+  const homepageGpaValue = document.querySelector("#homepage-gpa-value");
+  const gpaNumber = profile.gpa === null || profile.gpa === "" || profile.gpa === undefined ? NaN : Number(profile.gpa);
+  const hasGpa = Number.isFinite(gpaNumber) && gpaNumber >= 0 && gpaNumber <= 4;
+  if (homepageGpaFact && homepageGpaValue) {
+    homepageGpaFact.classList.toggle("hidden", !hasGpa);
+    homepageGpaValue.textContent = hasGpa ? `${gpaNumber.toFixed(2)} / 4.00` : "";
+  }
   contactLinks.replaceChildren();
   const addContact = (label, value, href, external = false) => {
     if (!value || !href) return;

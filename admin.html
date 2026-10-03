@@ -9,7 +9,7 @@
     <link rel="stylesheet" href="/admin-extra.css?v=profile-contact-20261003" />
     <link rel="stylesheet" href="/writeups-admin.css?v=profile-contact-20261003" />
     <link rel="stylesheet" href="/profile-admin.css?v=profile-contact-20261003" />
-    <script src="/admin.js?v=profile-contact-20261003" defer></script>
+    <script src="/admin.js?v=profile-gpa-20261003" defer></script>
   </head>
   <body>
     <div class="auth-layout" id="checking-state" style="grid-template-columns:1fr;place-items:center"><p class="login-copy">Checking admin setup…</p></div>
@@ -32,6 +32,7 @@
             <label class="field">LinkedIn URL<input type="url" name="linkedin_url" maxlength="2048" placeholder="https://www.linkedin.com/in/…" /></label>
             <label class="field">GitHub URL<input type="url" name="github_url" maxlength="2048" placeholder="https://github.com/…" /></label>
             <label class="field">Phone number <span>(optional)</span><input type="tel" name="phone" maxlength="40" autocomplete="tel" placeholder="+62 …" /></label>
+            <label class="field">GPA<input type="number" name="gpa" min="0" max="4" step="0.01" inputmode="decimal" placeholder="3.25" /><small>0.00 to 4.00 · up to 2 decimal places</small></label>
           </div>
           <div class="profile-settings-actions"><p class="form-message" id="profile-message" role="status"></p><button class="button button-dark" type="submit">SAVE PROFILE <span>↗</span></button></div>
         </form>

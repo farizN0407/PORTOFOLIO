@@ -11,6 +11,7 @@ import secrets
 import time
 import unicodedata
 from datetime import date, datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -106,6 +107,18 @@ def init_db() -> None:
             phone TEXT NOT NULL DEFAULT '',
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )""")
+        # Idempotent additive migration for profile_settings on existing deployments.
+        db.execute("ALTER TABLE profile_settings ADD COLUMN IF NOT EXISTS gpa NUMERIC(3,2)")
+        db.execute("""DO $$ BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint
+                WHERE conname = 'profile_settings_gpa_range_check'
+                    AND conrelid = 'profile_settings'::regclass
+            ) THEN
+                ALTER TABLE profile_settings ADD CONSTRAINT profile_settings_gpa_range_check
+                    CHECK (gpa IS NULL OR gpa BETWEEN 0.00 AND 4.00);
+            END IF;
+        END $$""")
         db.execute("INSERT INTO profile_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING")
         db.execute("""CREATE TABLE IF NOT EXISTS uploaded_files (
             id BIGSERIAL PRIMARY KEY,
@@ -173,9 +186,11 @@ def delete_file_if_unattached(db: psycopg.Connection, file_id: int | None) -> No
 
 
 def json_bytes(value: object) -> bytes:
-    def encode_extra(item: object) -> str:
+    def encode_extra(item: object) -> str | float:
         if isinstance(item, (date, datetime)):
             return item.isoformat()
+        if isinstance(item, Decimal):
+            return float(item)
         raise TypeError(f"Cannot serialize {type(item).__name__}")
 
     return json.dumps(value, ensure_ascii=False, default=encode_extra).encode("utf-8")
@@ -335,8 +350,8 @@ class PortfolioHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         if parsed.path == "/api/public/profile":
             with connect_db() as db:
-                profile = db.execute("SELECT email, whatsapp, linkedin_url, github_url, phone FROM profile_settings WHERE id = 1").fetchone()
-            self.send_json(HTTPStatus.OK, dict(profile) if profile else {"email": "", "whatsapp": "", "linkedin_url": "", "github_url": "", "phone": ""})
+                profile = db.execute("SELECT email, whatsapp, linkedin_url, github_url, phone, gpa FROM profile_settings WHERE id = 1").fetchone()
+            self.send_json(HTTPStatus.OK, dict(profile) if profile else {"email": "", "whatsapp": "", "linkedin_url": "", "github_url": "", "phone": "", "gpa": None})
             return
         if parsed.path == "/api/admin/status":
             setup_required = admin_setup_available()
@@ -430,7 +445,7 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/admin/profile":
                 with connect_db() as db:
-                    profile = db.execute("SELECT email, whatsapp, linkedin_url, github_url, phone FROM profile_settings WHERE id = 1").fetchone()
+                    profile = db.execute("SELECT email, whatsapp, linkedin_url, github_url, phone, gpa FROM profile_settings WHERE id = 1").fetchone()
                 self.send_json(HTTPStatus.OK, dict(profile) if profile else {})
                 return
             attachment_match = re.fullmatch(r"/api/admin/projects/(\d+)/attachments", parsed.path)
@@ -631,6 +646,21 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                 linkedin_url = str(incoming.get("linkedin_url", "")).strip()
                 github_url = str(incoming.get("github_url", "")).strip()
                 phone = str(incoming.get("phone", "")).strip()
+                raw_gpa = incoming.get("gpa")
+                if raw_gpa is None or (isinstance(raw_gpa, str) and not raw_gpa.strip()):
+                    gpa = None
+                else:
+                    if isinstance(raw_gpa, bool):
+                        raise ValueError("GPA must be between 0.00 and 4.00 with at most 2 decimal places")
+                    gpa_text = str(raw_gpa).strip()
+                    if not re.fullmatch(r"[0-9]+(?:\.[0-9]{1,2})?", gpa_text):
+                        raise ValueError("GPA must be between 0.00 and 4.00 with at most 2 decimal places")
+                    try:
+                        gpa = Decimal(gpa_text)
+                    except InvalidOperation as error:
+                        raise ValueError("GPA must be between 0.00 and 4.00 with at most 2 decimal places") from error
+                    if not gpa.is_finite() or not Decimal("0.00") <= gpa <= Decimal("4.00"):
+                        raise ValueError("GPA must be between 0.00 and 4.00 with at most 2 decimal places")
                 if email and (len(email) > 254 or not re.fullmatch(r"[^\s@]+@[^\s@]+\.[^\s@]+", email)):
                     raise ValueError("Enter a valid email address")
                 if len(whatsapp_raw) > 40 or re.search(r"[^0-9+() .-]", whatsapp_raw):
@@ -650,9 +680,9 @@ class PortfolioHandler(BaseHTTPRequestHandler):
                 return
             with connect_db() as db:
                 row = db.execute("""UPDATE profile_settings SET email = %s, whatsapp = %s, linkedin_url = %s,
-                    github_url = %s, phone = %s, updated_at = CURRENT_TIMESTAMP WHERE id = 1
-                    RETURNING email, whatsapp, linkedin_url, github_url, phone""",
-                    (email, whatsapp, linkedin_url, github_url, phone)).fetchone()
+                    github_url = %s, phone = %s, gpa = %s, updated_at = CURRENT_TIMESTAMP WHERE id = 1
+                    RETURNING email, whatsapp, linkedin_url, github_url, phone, gpa""",
+                    (email, whatsapp, linkedin_url, github_url, phone, gpa)).fetchone()
             self.send_json(HTTPStatus.OK, dict(row))
             return
         attachment_match = re.fullmatch(r"/api/admin/projects/(\d+)/attachments/(\d+)", urlparse(self.path).path)

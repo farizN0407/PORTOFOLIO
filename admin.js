@@ -174,8 +174,8 @@ async function loadSection(name) {
     profileMessage.textContent = "Loading saved details…";
     try {
       const profile = await api("/api/admin/profile");
-      for (const field of ["email", "whatsapp", "linkedin_url", "github_url", "phone"]) {
-        profileForm.elements[field].value = profile[field] || "";
+      for (const field of ["email", "whatsapp", "linkedin_url", "github_url", "phone", "gpa"]) {
+        profileForm.elements[field].value = profile[field] ?? "";
       }
       profileMessage.textContent = "";
     } catch (error) {
@@ -513,10 +513,16 @@ profileForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   profileMessage.textContent = "Saving profile details…";
   const values = Object.fromEntries(new FormData(profileForm).entries());
+  const gpa = String(values.gpa || "").trim();
+  if (gpa && (!/^\d+(?:\.\d{1,2})?$/.test(gpa) || Number(gpa) < 0 || Number(gpa) > 4)) {
+    profileMessage.textContent = "GPA must be between 0.00 and 4.00 with at most 2 decimal places.";
+    profileForm.elements.gpa.focus();
+    return;
+  }
   try {
     const saved = await api("/api/admin/profile", { method: "PUT", body: JSON.stringify(values) });
-    for (const field of ["email", "whatsapp", "linkedin_url", "github_url", "phone"]) {
-      profileForm.elements[field].value = saved[field] || "";
+    for (const field of ["email", "whatsapp", "linkedin_url", "github_url", "phone", "gpa"]) {
+      profileForm.elements[field].value = saved[field] ?? "";
     }
     profileMessage.textContent = "Profile details saved.";
   } catch (error) {
