@@ -205,6 +205,7 @@ function renderPublicProfile(profile) {
   const contactLinks = document.querySelector("#contact-links");
   const githubCta = document.querySelector("#contact-github-cta");
   const aboutGithub = document.querySelector("#about-github-cta");
+  const topGithub = document.querySelector("#top-github-link");
   if (!contactLinks) return;
   contactLinks.replaceChildren();
   const addContact = (label, value, href, external = false) => {
@@ -236,7 +237,17 @@ function renderPublicProfile(profile) {
   }
   if (aboutGithub) {
     aboutGithub.classList.toggle("hidden", !profile.github_url);
-    if (profile.github_url) aboutGithub.href = profile.github_url;
+    if (profile.github_url) {
+      aboutGithub.href = profile.github_url;
+      aboutGithub.rel = "noopener noreferrer";
+    } else aboutGithub.removeAttribute("href");
+  }
+  if (topGithub) {
+    topGithub.classList.toggle("hidden", !profile.github_url);
+    if (profile.github_url) {
+      topGithub.href = profile.github_url;
+      topGithub.rel = "noopener noreferrer";
+    } else topGithub.removeAttribute("href");
   }
 }
 

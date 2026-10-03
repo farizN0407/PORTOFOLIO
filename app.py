@@ -895,6 +895,7 @@ class PortfolioHandler(BaseHTTPRequestHandler):
         if path in (
             "/admin", "/admin/", "/admin.css", "/admin-extra.css",
             "/writeups-admin.css", "/profile-admin.css", "/admin.js",
+            "/about.js", "/script.js",
         ):
             self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Security-Policy", "default-src 'self'; style-src 'self' https://fonts.googleapis.com 'unsafe-inline'; font-src 'self' https://fonts.gstatic.com; img-src 'self' data:; script-src 'self'; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'")
